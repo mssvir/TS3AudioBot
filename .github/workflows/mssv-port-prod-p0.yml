@@ -1,0 +1,64 @@
+name: MSSV Port P0 to Production Baseline
+
+on:
+  push:
+    branches:
+      - mssv/prod-compatible-p0-377f3b7e
+    paths:
+      - '.github/workflows/mssv-port-prod-p0.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  port-test-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@v4
+        with:
+          ref: mssv/prod-compatible-p0-377f3b7e
+          fetch-depth: 0
+
+      - name: Apply surgical FFmpeg P0 port
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 tools/mssv_port_p0_eagain.py
+          git diff --check
+          grep -Fq 'FfmpegStartGate' TS3AudioBot/Audio/FfmpegProducer.cs
+          grep -Fq 'EAGAIN/errno 11' TS3AudioBot/Audio/FfmpegProducer.cs
+          grep -Fq 'HLS URL detected' TS3AudioBot/Audio/FfmpegProducer.cs
+
+      - name: Setup .NET 6
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '6.0.x'
+
+      - name: Install dotnet-script
+        shell: bash
+        run: dotnet tool install --global dotnet-script --version 1.5.0
+
+      - name: Restore and test production-compatible source
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          dotnet --info
+          dotnet restore TS3ABotUnitTests/TS3ABotUnitTests.csproj
+          dotnet test TS3ABotUnitTests/TS3ABotUnitTests.csproj -c Release --no-restore --verbosity normal
+
+      - name: Commit exact patched source back to the fork
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if git diff --quiet -- TS3AudioBot/Audio/FfmpegProducer.cs; then
+            echo 'Source already contains the P0 port; nothing to commit.'
+            exit 0
+          fi
+          git config user.name 'mssv-github-actions'
+          git config user.email 'actions@users.noreply.github.com'
+          git add TS3AudioBot/Audio/FfmpegProducer.cs
+          git commit -m 'fix: port FFmpeg EAGAIN guard to production baseline'
+          git push origin HEAD:mssv/prod-compatible-p0-377f3b7e
