@@ -1,0 +1,38 @@
+name: MSSV CI
+
+on:
+  push:
+    branches:
+      - master
+      - 'mssv/**'
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout source and submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Setup .NET Core 3.1 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '3.1.x'
+
+      - name: Restore
+        run: dotnet restore TS3AudioBot.sln
+
+      - name: Build
+        run: dotnet build TS3AudioBot.sln -c Release --no-restore
+
+      - name: Test
+        run: dotnet test TS3ABotUnitTests/TS3ABotUnitTests.csproj -c Release --no-build --no-restore
