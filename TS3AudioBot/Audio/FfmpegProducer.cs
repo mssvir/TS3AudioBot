@@ -34,6 +34,7 @@ namespace TS3AudioBot.Audio
 		private const string PostLinkConf = "\" -ac 2 -ar 48000 -f s16le -acodec pcm_s16le pipe:1";
 		private const string LinkConfIcy = "-hide_banner -nostats -threads 1 -i pipe:0 -ac 2 -ar 48000 -f s16le -acodec pcm_s16le pipe:1";
 		private static readonly TimeSpan retryOnDropBeforeEnd = TimeSpan.FromSeconds(10);
+		private static readonly FfmpegStartAdmissionGate FfmpegStartGate = new FfmpegStartAdmissionGate();
 
 		private readonly ConfToolsFfmpeg config;
 
@@ -263,6 +264,14 @@ namespace TS3AudioBot.Audio
 
 		private R<FfmpegInstance, string> StartFfmpegProcessInternal(FfmpegInstance instance, string arguments)
 		{
+			if (!FfmpegStartGate.TryEnter(out var retryAfter))
+			{
+				var error = $"FFmpeg start temporarily throttled after operating system resource exhaustion. Retry after approximately {Math.Ceiling(retryAfter.TotalMilliseconds):0} ms.";
+				Log.Warn(error);
+				instance.Close();
+				return error;
+			}
+
 			try
 			{
 				instance.FfmpegProcess.StartInfo = new ProcessStartInfo
@@ -280,6 +289,7 @@ namespace TS3AudioBot.Audio
 				Log.Debug("Starting ffmpeg with {0}", arguments);
 				instance.FfmpegProcess.ErrorDataReceived += instance.FfmpegProcess_ErrorDataReceived;
 				instance.FfmpegProcess.Start();
+				FfmpegStartGate.RecordSuccess();
 				instance.FfmpegProcess.BeginErrorReadLine();
 
 				instance.AudioTimer.Start();
@@ -291,13 +301,29 @@ namespace TS3AudioBot.Audio
 			}
 			catch (Exception ex)
 			{
-				var error = DescribeFfmpegStartError(ex);
+				string error;
+				if (IsFfmpegStartResourceExhaustion(ex))
+				{
+					var cooldown = FfmpegStartGate.RecordResourceFailure();
+					error = $"{DescribeFfmpegStartError(ex)} New FFmpeg starts are throttled for approximately {Math.Ceiling(cooldown.TotalMilliseconds):0} ms.";
+				}
+				else
+				{
+					FfmpegStartGate.RecordNonResourceFailure();
+					error = DescribeFfmpegStartError(ex);
+				}
+
 				Log.Error(ex, error);
 				instance.Close();
 				StopFfmpegProcess();
 				return error;
 			}
 		}
+
+		private static bool IsFfmpegStartResourceExhaustion(Exception ex)
+			=> RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
+				&& ex is Win32Exception win32
+				&& win32.NativeErrorCode == 11;
 
 		private static string DescribeFfmpegStartError(Exception ex)
 		{
@@ -307,7 +333,7 @@ namespace TS3AudioBot.Audio
 			if (win32.NativeErrorCode == 2)
 				return $"Ffmpeg could not be found ({win32.Message})";
 
-			if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && win32.NativeErrorCode == 11)
+			if (IsFfmpegStartResourceExhaustion(ex))
 				return $"Unable to start ffmpeg: operating system process/thread resources are temporarily exhausted (EAGAIN/errno 11: {win32.Message})";
 
 			return $"Unable to start ffmpeg (native error {win32.NativeErrorCode}: {win32.Message})";
