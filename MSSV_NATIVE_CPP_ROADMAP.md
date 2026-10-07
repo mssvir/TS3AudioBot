@@ -34,6 +34,16 @@ Before replacing components, capture machine-verifiable behavior for the existin
 
 Golden fixtures and conformance tests should live in this repository and be runnable against both the managed reference implementation and native replacements.
 
+## Official upstream modernization bridge
+
+Native migration and managed-runtime modernization are separate tracks.
+
+At the 2026-10-08 review point, official upstream `Splamy/TS3AudioBot` has an active `develop` branch at `142e4e2fab19f75b8bd00068134992263b6f0c1c`. That reviewed snapshot is substantially ahead of upstream `master` and targets `net10.0`.
+
+After the current reliability baseline is accepted, upstream `develop` should be evaluated before adopting unrelated third-party C# forks. A bounded compatibility branch may port this fork's required fixes and tests onto that upstream line so inherited legacy-runtime risk can be reduced while C++ work proceeds.
+
+This is not a substitute for the current reliability patches: at the reviewed upstream `develop` snapshot, FFmpeg process-start handling still maps a generic `Win32Exception` to a missing-FFmpeg message and does not include this fork's Linux EAGAIN/resource-exhaustion admission behavior. Any move to upstream `develop` therefore requires re-porting and revalidating the fork-specific reliability contract rather than switching bases blindly.
+
 ## Phase 1 — native process and FFmpeg supervision
 
 The first preferred native seam is external-process supervision because it has high reliability value and relatively low coupling to TeamSpeak protocol behavior.
@@ -114,6 +124,7 @@ The authoritative public source remains this repository. Private deployment and 
 ## Ordered near-term tasks
 
 - [ ] Add machine-readable compatibility/conformance fixtures for current C# behavior.
+- [ ] Evaluate the reviewed official upstream `develop` modernization line in a separate compatibility track after the current reliability canary is accepted.
 - [ ] Document the process-supervision seam and its protocol/interface.
 - [ ] Add a minimal C++ build/test skeleton without changing the shipping runtime.
 - [ ] Implement native process-spawn classification and bounded admission behavior.
