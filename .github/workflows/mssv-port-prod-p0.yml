@@ -10,31 +10,30 @@ on:
       - 'TS3AudioBot/Audio/FfmpegStartAdmissionGate.cs'
       - 'TS3ABotUnitTests/FfmpegProducerTests.cs'
       - 'TS3ABotUnitTests/FfmpegStartAdmissionGateTests.cs'
-      - 'tools/mssv_port_p0_eagain.py'
+  pull_request:
+    paths:
+      - '.github/workflows/mssv-port-prod-p0.yml'
+      - 'TS3AudioBot/Audio/FfmpegProducer.cs'
+      - 'TS3AudioBot/Audio/FfmpegStartAdmissionGate.cs'
+      - 'TS3ABotUnitTests/FfmpegProducerTests.cs'
+      - 'TS3ABotUnitTests/FfmpegStartAdmissionGateTests.cs'
   workflow_dispatch:
 
-# Temporary write permission is required only until the already-tested surgical
-# patch is materialized in FfmpegProducer.cs. A follow-up commit converts this
-# workflow to read-only validation.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  port-test-commit:
+  p0-regression:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - name: Checkout exact compatibility branch
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          ref: mssv/prod-compatible-p0-377f3b7e
-          fetch-depth: 0
 
-      - name: Materialize tested FFmpeg P0 port
+      - name: Verify runtime port is materialized
         shell: bash
         run: |
           set -Eeuo pipefail
-          python3 tools/mssv_port_p0_eagain.py
           git diff --check
           grep -Fq 'FfmpegStartGate' TS3AudioBot/Audio/FfmpegProducer.cs
           grep -Fq 'EAGAIN/errno 11' TS3AudioBot/Audio/FfmpegProducer.cs
@@ -65,17 +64,3 @@ jobs:
             --no-restore \
             --verbosity normal \
             --filter 'FullyQualifiedName~FfmpegProducerTests|FullyQualifiedName~FfmpegStartAdmissionGateTests'
-
-      - name: Commit the validated runtime source once
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          if git diff --quiet -- TS3AudioBot/Audio/FfmpegProducer.cs; then
-            echo 'Runtime source already contains the validated P0 port.'
-            exit 0
-          fi
-          git config user.name 'mssv-github-actions'
-          git config user.email 'actions@users.noreply.github.com'
-          git add TS3AudioBot/Audio/FfmpegProducer.cs
-          git commit -m 'fix: materialize FFmpeg EAGAIN admission gate'
-          git push origin HEAD:mssv/prod-compatible-p0-377f3b7e
