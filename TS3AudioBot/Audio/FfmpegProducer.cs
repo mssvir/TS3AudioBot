@@ -12,6 +12,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -290,14 +291,26 @@ namespace TS3AudioBot.Audio
 			}
 			catch (Exception ex)
 			{
-				var error = ex is Win32Exception
-					? $"Ffmpeg could not be found ({ex.Message})"
-					: $"Unable to create stream ({ex.Message})";
+				var error = DescribeFfmpegStartError(ex);
 				Log.Error(ex, error);
 				instance.Close();
 				StopFfmpegProcess();
 				return error;
 			}
+		}
+
+		private static string DescribeFfmpegStartError(Exception ex)
+		{
+			if (!(ex is Win32Exception win32))
+				return $"Unable to create stream ({ex.Message})";
+
+			if (win32.NativeErrorCode == 2)
+				return $"Ffmpeg could not be found ({win32.Message})";
+
+			if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux) && win32.NativeErrorCode == 11)
+				return $"Unable to start ffmpeg: operating system process/thread resources are temporarily exhausted (EAGAIN/errno 11: {win32.Message})";
+
+			return $"Unable to start ffmpeg (native error {win32.NativeErrorCode}: {win32.Message})";
 		}
 
 		private void StopFfmpegProcess()
