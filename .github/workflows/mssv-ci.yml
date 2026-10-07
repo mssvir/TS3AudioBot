@@ -15,24 +15,27 @@ permissions:
 jobs:
   build-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout source and submodules
         uses: actions/checkout@v4
         with:
           submodules: recursive
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Setup .NET Core 3.1 SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '3.1.x'
-
-      - name: Restore
-        run: dotnet restore TS3AudioBot.sln
-
-      - name: Build
-        run: dotnet build TS3AudioBot.sln -c Release --no-restore
-
-      - name: Test
-        run: dotnet test TS3ABotUnitTests/TS3ABotUnitTests.csproj -c Release --no-build --no-restore
+      - name: Restore, build and test with the legacy runtime contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/src" \
+            -w /src \
+            mcr.microsoft.com/dotnet/sdk:3.1-buster \
+            bash -lc '
+              set -Eeuo pipefail
+              dotnet --info
+              dotnet restore TS3AudioBot.sln
+              dotnet build TS3AudioBot.sln -c Release --no-restore
+              dotnet test TS3ABotUnitTests/TS3ABotUnitTests.csproj -c Release --no-build --no-restore
+            '
