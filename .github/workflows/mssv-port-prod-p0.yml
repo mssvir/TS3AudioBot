@@ -1,4 +1,4 @@
-name: MSSV Port P0 to Production Baseline
+name: MSSV Production P0 FFmpeg Gate
 
 on:
   push:
@@ -6,8 +6,16 @@ on:
       - mssv/prod-compatible-p0-377f3b7e
     paths:
       - '.github/workflows/mssv-port-prod-p0.yml'
+      - 'TS3AudioBot/Audio/FfmpegProducer.cs'
+      - 'TS3AudioBot/Audio/FfmpegStartAdmissionGate.cs'
+      - 'TS3ABotUnitTests/FfmpegProducerTests.cs'
+      - 'TS3ABotUnitTests/FfmpegStartAdmissionGateTests.cs'
+      - 'tools/mssv_port_p0_eagain.py'
   workflow_dispatch:
 
+# Temporary write permission is required only until the already-tested surgical
+# patch is materialized in FfmpegProducer.cs. A follow-up commit converts this
+# workflow to read-only validation.
 permissions:
   contents: write
 
@@ -16,13 +24,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - name: Checkout exact branch
+      - name: Checkout exact compatibility branch
         uses: actions/checkout@v4
         with:
           ref: mssv/prod-compatible-p0-377f3b7e
           fetch-depth: 0
 
-      - name: Apply surgical FFmpeg P0 port
+      - name: Materialize tested FFmpeg P0 port
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -32,7 +40,7 @@ jobs:
           grep -Fq 'EAGAIN/errno 11' TS3AudioBot/Audio/FfmpegProducer.cs
           grep -Fq 'HLS URL detected' TS3AudioBot/Audio/FfmpegProducer.cs
 
-      - name: Setup .NET 6
+      - name: Setup .NET 6 compatibility SDK
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '6.0.x'
@@ -41,24 +49,33 @@ jobs:
         shell: bash
         run: dotnet tool install --global dotnet-script --version 1.5.0
 
-      - name: Restore and test production-compatible source
+      - name: Restore tests
         shell: bash
         run: |
           set -Eeuo pipefail
           dotnet --info
           dotnet restore TS3ABotUnitTests/TS3ABotUnitTests.csproj
-          dotnet test TS3ABotUnitTests/TS3ABotUnitTests.csproj -c Release --no-restore --verbosity normal
 
-      - name: Commit exact patched source back to the fork
+      - name: Run P0 regression tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          dotnet test TS3ABotUnitTests/TS3ABotUnitTests.csproj \
+            -c Release \
+            --no-restore \
+            --verbosity normal \
+            --filter 'FullyQualifiedName~FfmpegProducerTests|FullyQualifiedName~FfmpegStartAdmissionGateTests'
+
+      - name: Commit the validated runtime source once
         shell: bash
         run: |
           set -Eeuo pipefail
           if git diff --quiet -- TS3AudioBot/Audio/FfmpegProducer.cs; then
-            echo 'Source already contains the P0 port; nothing to commit.'
+            echo 'Runtime source already contains the validated P0 port.'
             exit 0
           fi
           git config user.name 'mssv-github-actions'
           git config user.email 'actions@users.noreply.github.com'
           git add TS3AudioBot/Audio/FfmpegProducer.cs
-          git commit -m 'fix: port FFmpeg EAGAIN guard to production baseline'
+          git commit -m 'fix: materialize FFmpeg EAGAIN admission gate'
           git push origin HEAD:mssv/prod-compatible-p0-377f3b7e
