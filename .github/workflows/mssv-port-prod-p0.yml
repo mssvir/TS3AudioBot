@@ -8,15 +8,21 @@ on:
       - '.github/workflows/mssv-port-prod-p0.yml'
       - 'TS3AudioBot/Audio/FfmpegProducer.cs'
       - 'TS3AudioBot/Audio/FfmpegStartAdmissionGate.cs'
+      - 'TS3AudioBot/CompatibilityProbe.cs'
+      - 'TS3AudioBot/Setup.cs'
       - 'TS3ABotUnitTests/FfmpegProducerTests.cs'
       - 'TS3ABotUnitTests/FfmpegStartAdmissionGateTests.cs'
+      - 'TS3ABotUnitTests/ProductionCompatibilityTests.cs'
   pull_request:
     paths:
       - '.github/workflows/mssv-port-prod-p0.yml'
       - 'TS3AudioBot/Audio/FfmpegProducer.cs'
       - 'TS3AudioBot/Audio/FfmpegStartAdmissionGate.cs'
+      - 'TS3AudioBot/CompatibilityProbe.cs'
+      - 'TS3AudioBot/Setup.cs'
       - 'TS3ABotUnitTests/FfmpegProducerTests.cs'
       - 'TS3ABotUnitTests/FfmpegStartAdmissionGateTests.cs'
+      - 'TS3ABotUnitTests/ProductionCompatibilityTests.cs'
   workflow_dispatch:
 
 permissions:
@@ -63,4 +69,4 @@ jobs:
             -c Release \
             --no-restore \
             --verbosity normal \
-            --filter 'FullyQualifiedName~FfmpegProducerTests|FullyQualifiedName~FfmpegStartAdmissionGateTests'
+            --filter 'FullyQualifiedName~FfmpegProducerTests|FullyQualifiedName~FfmpegStartAdmissionGateTests|FullyQualifiedName~ProductionCompatibilityTests'

@@ -60,6 +60,9 @@ namespace TS3AudioBot
 				return ExitCodeOk;
 			}
 
+			if (setup.ProbeDatabase != null)
+				return CompatibilityProbe.Run(setup.ProbeDatabase, Console.Out);
+
 			if (setup.ShowStatsExample)
 			{
 				Console.WriteLine("The bot will contribute to the stats counter about once per day.");
@@ -161,6 +164,8 @@ namespace TS3AudioBot
 		public bool ShowStatsExample { get; set; }
 		[Option('V', "version", HelpText = "Gets the bot version.")]
 		public bool ShowVersion { get; set; }
+		[Option("probe-database", HelpText = "Read-only compatibility check on an offline database copy; does not start the bot.")]
+		public string? ProbeDatabase { get; set; }
 
 		// -i --interactive, minimal ui/console tool to execute basic stuff like
 		// create bot, excute commands

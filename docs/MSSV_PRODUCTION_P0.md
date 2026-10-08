@@ -46,6 +46,14 @@ Focused regression coverage verifies:
 
 The final P0 branch workflow is read-only (`contents: read`) and runs the focused tests on every relevant push/PR.
 
+The compatible line also provides a fail-closed, read-only database probe:
+
+```sh
+./TS3AudioBot --probe-database /private/offline-copy/ts3audiobot.db
+```
+
+Run it only against a consistent private copy while the service is stopped. It exits before log configuration, Webserver, TeamSpeak, bot configuration, or statistics startup. It reports only runtime/library versions and `database_probe=compatible|missing|incompatible`; it does not print paths, rows, exception messages, credentials, or customer configuration. A nonzero result blocks deployment. The copy remains private and must never be uploaded as a CI artifact.
+
 A previous broad test run passed 73 of 75 tests. The two failures were YouTube integration tests on the hosted runner where `youtube-dl`/`yt-dlp` was not installed; the P0 tests passed.
 
 ## Production rollout contract
@@ -55,11 +63,12 @@ Production deployment belongs in the private MSSV control/deployment repository,
 Required order:
 
 1. build the reviewed production-compatible commit;
-2. preserve the currently deployed known-good release for rollback;
-3. deploy to the smallest safe canary scope first;
-4. verify process-start errors, FFmpeg child count, reconnect rate, playback probes, CPU/memory/PID pressure, and service health;
-5. expand only if the canary remains healthy;
-6. roll back immediately on playback, reconnect, or resource-pressure regression.
+2. create a consistent private database copy and require the candidate probe to accept it;
+3. preserve the currently deployed known-good binary and mutable configuration/database state for rollback;
+4. deploy to the smallest safe canary scope first;
+5. verify process-start errors, FFmpeg child count, reconnect rate, playback probes, CPU/memory/PID pressure, and service health;
+6. expand only if the canary remains healthy;
+7. restore the exact binary and snapshotted mutable state on any acceptance failure.
 
 No production credential may be passed through command-line logs or committed files.
 
