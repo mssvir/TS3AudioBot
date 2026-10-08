@@ -1,0 +1,66 @@
+name: MSSV Production P0 FFmpeg Gate
+
+on:
+  push:
+    branches:
+      - mssv/prod-compatible-p0-377f3b7e
+    paths:
+      - '.github/workflows/mssv-port-prod-p0.yml'
+      - 'TS3AudioBot/Audio/FfmpegProducer.cs'
+      - 'TS3AudioBot/Audio/FfmpegStartAdmissionGate.cs'
+      - 'TS3ABotUnitTests/FfmpegProducerTests.cs'
+      - 'TS3ABotUnitTests/FfmpegStartAdmissionGateTests.cs'
+  pull_request:
+    paths:
+      - '.github/workflows/mssv-port-prod-p0.yml'
+      - 'TS3AudioBot/Audio/FfmpegProducer.cs'
+      - 'TS3AudioBot/Audio/FfmpegStartAdmissionGate.cs'
+      - 'TS3ABotUnitTests/FfmpegProducerTests.cs'
+      - 'TS3ABotUnitTests/FfmpegStartAdmissionGateTests.cs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  p0-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify runtime port is materialized
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          git diff --check
+          grep -Fq 'FfmpegStartGate' TS3AudioBot/Audio/FfmpegProducer.cs
+          grep -Fq 'EAGAIN/errno 11' TS3AudioBot/Audio/FfmpegProducer.cs
+          grep -Fq 'HLS URL detected' TS3AudioBot/Audio/FfmpegProducer.cs
+
+      - name: Setup .NET 6 compatibility SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '6.0.x'
+
+      - name: Install dotnet-script
+        shell: bash
+        run: dotnet tool install --global dotnet-script --version 1.5.0
+
+      - name: Restore tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          dotnet --info
+          dotnet restore TS3ABotUnitTests/TS3ABotUnitTests.csproj
+
+      - name: Run P0 regression tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          dotnet test TS3ABotUnitTests/TS3ABotUnitTests.csproj \
+            -c Release \
+            --no-restore \
+            --verbosity normal \
+            --filter 'FullyQualifiedName~FfmpegProducerTests|FullyQualifiedName~FfmpegStartAdmissionGateTests'
