@@ -6,6 +6,7 @@
 #include <csignal>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -101,7 +102,11 @@ bool wait_for_process_group_absent(const pid_t process_group, const std::chrono:
 
 void test_real_missing_executable_is_classified()
 {
-    LinuxProcessBackend backend(ProcessSpec{"/mssv/definitely-missing-process-binary", {}});
+    LinuxProcessBackend backend(ProcessSpec{
+        "/mssv/definitely-missing-process-binary",
+        {},
+        std::nullopt,
+    });
     SpawnAdmissionGate gate;
     ProcessSupervisor supervisor(backend, gate, true);
 
@@ -173,7 +178,11 @@ void test_graceful_stop_owns_group_and_reaps_process_tree(const std::string& fix
     const auto marker = marker_path("tree-graceful");
     (void)std::remove(marker.c_str());
 
-    LinuxProcessBackend backend(ProcessSpec{fixture, {"tree-graceful", marker}});
+    LinuxProcessBackend backend(ProcessSpec{
+        fixture,
+        {"tree-graceful", marker},
+        std::nullopt,
+    });
     SpawnAdmissionGate gate;
     ProcessSupervisor supervisor(backend, gate, true);
 
@@ -207,7 +216,11 @@ void test_timeout_escalates_to_group_sigkill(const std::string& fixture)
     const auto marker = marker_path("ignore-term");
     (void)std::remove(marker.c_str());
 
-    LinuxProcessBackend backend(ProcessSpec{fixture, {"ignore-term", marker}});
+    LinuxProcessBackend backend(ProcessSpec{
+        fixture,
+        {"ignore-term", marker},
+        std::nullopt,
+    });
     SpawnAdmissionGate gate;
     ProcessSupervisor supervisor(backend, gate, true);
 
