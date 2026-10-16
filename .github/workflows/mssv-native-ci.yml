@@ -107,3 +107,59 @@ jobs:
           set -Eeuo pipefail
           bash native/tests/systemd_cgroup_integration.sh \
             build/native-systemd/mssv_process_tree_fixture
+
+  ffmpeg-integration-resource:
+    name: FFmpeg lifecycle + resource baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Ninja and FFmpeg
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build ffmpeg
+          ffmpeg -version | head -n 1
+
+      - name: Configure and build FFmpeg integration targets
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFMPEG="$(command -v ffmpeg)"
+          cmake -S native -B build/native-ffmpeg -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DMSSV_FFMPEG_EXECUTABLE="$FFMPEG"
+          cmake --build build/native-ffmpeg \
+            --target mssv_ffmpeg_process_integration_tests mssv_ffmpeg_resource_baseline \
+            --parallel 2
+
+      - name: Verify synthetic FFmpeg lifecycle
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ctest --test-dir build/native-ffmpeg \
+            -R '^mssv_ffmpeg_process_integration_tests$' \
+            --output-on-failure
+
+      - name: Measure synthetic FFmpeg fan-out resources
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FFMPEG="$(command -v ffmpeg)"
+          BASELINE_FILE="${RUNNER_TEMP}/mssv-ffmpeg-resource-baseline.txt"
+          build/native-ffmpeg/mssv_ffmpeg_resource_baseline "$FFMPEG" 6 | tee "$BASELINE_FILE"
+          {
+            echo '### MSSV native FFmpeg resource baseline'
+            echo ''
+            echo 'Synthetic local lavfi/sine workload; hosted-runner measurements are informational, not production capacity limits.'
+            echo ''
+            echo '```text'
+            cat "$BASELINE_FILE"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

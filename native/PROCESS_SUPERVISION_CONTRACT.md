@@ -64,17 +64,31 @@ This is diagnostic plumbing, not a general logging subsystem. No command-line ar
 
 ## Controlled systemd/cgroup validation
 
-CI now includes a dedicated Ubuntu 24.04 systemd + cgroup v2 integration job. It starts the test fixture in a transient systemd service with `KillMode=control-group`, `SendSIGKILL=yes`, and a bounded stop timeout.
+CI includes a dedicated Ubuntu 24.04 systemd + cgroup v2 integration job. It starts the test fixture in a transient systemd service with `KillMode=control-group`, `SendSIGKILL=yes`, and a bounded stop timeout.
 
 The fixture forks a descendant that calls `setsid()`, moves into its own process group/session, deliberately ignores SIGTERM, and records its PID. The test verifies that the descendant is no longer in the service leader's process group while `/proc/<pid>/cgroup` still places it in the transient service cgroup. `systemctl stop` must then remove the descendant and leave no processes in the unit cgroup. This demonstrates the service-envelope behavior required when process-group ownership alone cannot reach a descendant.
 
 This controlled CI result is not a substitute for validating the eventual production unit definition and canary deployment. The production service must preserve equivalent cgroup ownership and stop policy before native supervision can become a default path.
 
+## Synthetic FFmpeg integration and resource baseline
+
+CI also runs the native backend against the real packaged FFmpeg executable using only local synthetic `lavfi` sine sources. No network input, customer media, production URLs, credentials, or private topology are used.
+
+The FFmpeg lifecycle integration verifies:
+
+- a short synthetic FFmpeg workload starts through `LinuxProcessBackend`, reaches natural completion within a bounded wait, and finalizes ownership cleanly;
+- optional bounded stderr capture remains within its configured limit;
+- a real-time synthetic FFmpeg workload can be cancelled through `ProcessSupervisor` and leaves no tracked process group, regardless of whether FFmpeg exits during the graceful interval or requires bounded force escalation.
+
+A separate unsanitized hosted-runner baseline starts six real FFmpeg processes concurrently using throttled synthetic audio and samples Linux `/proc` data during the run. It reports aggregate CPU percentage over the measurement window, peak aggregate RSS, peak aggregate thread/task count, started/finalized child counts, and cleanup completeness. The job requires all children to start, all resource samples to be readable, all children to terminate within bounded waits, and all backend ownership to finalize.
+
+The numerical CPU/RSS/thread values are informational baselines for that CI runner only. They are intentionally not hard pass/fail capacity thresholds because hosted runner hardware and FFmpeg builds vary. Production sizing and acceptance still require canary measurements on the actual service hosts.
+
 ## Safety boundary
 
 The native library remains non-shipping. Nothing in this directory is linked into the shipping TS3AudioBot executable, and CI must not require production credentials, customer configuration, private topology, or mutable production data.
 
-Passing the current Linux tests proves the lifecycle, diagnostic, and controlled systemd/cgroup mechanics exercised by the fixtures; it does **not** yet prove production FFmpeg compatibility, actual production unit settings, resource limits, long-running playback behavior, or safe canary rollback.
+Passing the current Linux tests proves the lifecycle, diagnostic, controlled systemd/cgroup, and synthetic FFmpeg mechanics exercised by the fixtures; it does **not** yet prove actual production unit settings, representative customer-media behavior, long-running production playback, or safe canary rollback.
 
 ## Failure-injection coverage
 
@@ -96,14 +110,16 @@ Real Linux integration tests verify:
 - a fixture can emit more than the pipe capacity without deadlocking because stderr is continuously drained;
 - exposed stderr stays within its configured bound and reports truncation;
 - configured literal secrets are redacted even when emitted across separate writes;
-- a secret prefix cut by the capture boundary is dropped rather than exposed.
+- a secret prefix cut by the capture boundary is dropped rather than exposed;
+- real FFmpeg can complete and cancel safely under the native ownership contract using non-sensitive synthetic sources;
+- representative synthetic FFmpeg fan-out exposes measurable CPU/RSS/thread behavior and all children finalize without tracked leftovers.
 
-The process-tree/stderr fixture is test-only and contains no production data or credentials.
+The process-tree/stderr fixtures and synthetic FFmpeg workloads are test-only and contain no production data or credentials.
 
 ## Next acceptance work
 
-Before this seam may supervise real FFmpeg children in a canary, add:
+Before this seam may become a default production path:
 
-1. representative CPU, RSS, task/thread, and child-process measurements;
-2. FFmpeg-specific integration coverage using non-sensitive fixtures;
-3. canary integration behind an explicit managed fallback, including validation of the actual production systemd/cgroup unit policy.
+1. add a managed/native selection and explicit fallback boundary for a canary;
+2. validate the actual production systemd/cgroup unit policy and rollback behavior during canary;
+3. compare native and managed resource/lifecycle behavior on representative non-sensitive playback workloads before widening rollout.
