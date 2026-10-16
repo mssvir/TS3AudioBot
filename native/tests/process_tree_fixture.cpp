@@ -146,6 +146,41 @@ int run_tree_stubborn(const std::string& child_pid_path)
     return 0;
 }
 
+int run_tree_escaped_stubborn(const std::string& child_pid_path)
+{
+    if (!install_terminate_handler()) {
+        return 50;
+    }
+
+    const auto child = fork();
+    if (child < 0) {
+        return 51;
+    }
+
+    if (child == 0) {
+        if (setsid() < 0) {
+            _exit(52);
+        }
+        if (!ignore_terminate()) {
+            _exit(53);
+        }
+        if (!write_pid_file(child_pid_path, getpid())) {
+            _exit(54);
+        }
+        while (true) {
+            pause();
+        }
+    }
+
+    while (terminate_requested == 0) {
+        pause();
+    }
+
+    // The descendant deliberately escapes the parent's process group/session and ignores SIGTERM.
+    // A systemd KillMode=control-group stop must still remove it because cgroup membership remains.
+    return 0;
+}
+
 int run_ignore_term(const std::string& ready_path)
 {
     if (!ignore_terminate()) {
@@ -190,7 +225,7 @@ int run_emit_stderr(const std::string& secret)
 int main(const int argc, char** argv)
 {
     if (argc != 3) {
-        std::cerr << "usage: process_tree_fixture <tree-graceful|tree-stubborn|ignore-term|emit-stderr> <value>\n";
+        std::cerr << "usage: process_tree_fixture <tree-graceful|tree-stubborn|tree-escaped-stubborn|ignore-term|emit-stderr> <value>\n";
         return 2;
     }
 
@@ -202,6 +237,9 @@ int main(const int argc, char** argv)
     }
     if (mode == "tree-stubborn") {
         return run_tree_stubborn(value);
+    }
+    if (mode == "tree-escaped-stubborn") {
+        return run_tree_escaped_stubborn(value);
     }
     if (mode == "ignore-term") {
         return run_ignore_term(value);
