@@ -6,6 +6,7 @@
 #include <csignal>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -14,11 +15,14 @@
 
 namespace {
 
+using mssv::process::ChildId;
 using mssv::process::LinuxProcessBackend;
 using mssv::process::ProcessSpec;
 using mssv::process::ProcessSupervisor;
 using mssv::process::SpawnAdmissionGate;
 using mssv::process::StartStatus;
+using mssv::process::StderrCaptureOptions;
+using mssv::process::StderrSnapshot;
 using mssv::process::StopCause;
 
 void expect(const bool condition, const std::string_view message)
@@ -45,6 +49,25 @@ pid_t wait_for_marker_pid(const std::string& path, const std::chrono::millisecon
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
     }
     throw std::runtime_error("fixture marker was not created before timeout");
+}
+
+StderrSnapshot wait_for_complete_stderr(
+    const LinuxProcessBackend& backend,
+    const ChildId child_id,
+    const std::chrono::milliseconds timeout)
+{
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (true) {
+        const auto snapshot = backend.stderr_snapshot(child_id);
+        expect(snapshot.has_value(), "stderr capture must exist for tracked child");
+        if (snapshot->complete) {
+            return *snapshot;
+        }
+        if (std::chrono::steady_clock::now() >= deadline) {
+            throw std::runtime_error("stderr capture did not reach EOF before timeout");
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
 }
 
 bool wait_for_process_absent(const pid_t process_id, const std::chrono::milliseconds timeout)
@@ -79,7 +102,11 @@ bool wait_for_process_group_absent(const pid_t process_group, const std::chrono:
 
 void test_real_missing_executable_is_classified()
 {
-    LinuxProcessBackend backend(ProcessSpec{"/mssv/definitely-missing-process-binary", {}});
+    LinuxProcessBackend backend(ProcessSpec{
+        "/mssv/definitely-missing-process-binary",
+        {},
+        std::nullopt,
+    });
     SpawnAdmissionGate gate;
     ProcessSupervisor supervisor(backend, gate, true);
 
@@ -89,12 +116,73 @@ void test_real_missing_executable_is_classified()
     expect(backend.tracked_child_count() == 0, "failed spawn must not create a tracked child");
 }
 
+void test_invalid_stderr_capture_is_fail_closed(const std::string& fixture)
+{
+    LinuxProcessBackend backend(ProcessSpec{
+        fixture,
+        {"emit-stderr", "unit-test-secret"},
+        StderrCaptureOptions{0, {"unit-test-secret"}},
+    });
+
+    const auto attempt = backend.spawn();
+    expect(!attempt.started, "invalid zero-byte stderr capture must fail before spawn");
+    expect(attempt.native_error == EINVAL, "invalid stderr capture must expose EINVAL");
+    expect(backend.tracked_child_count() == 0, "invalid capture must not create child ownership");
+}
+
+void test_bounded_stderr_is_drained_and_redacted(const std::string& fixture)
+{
+    const std::string secret = "unit-test-secret-value";
+    constexpr std::size_t capture_limit = 128;
+    LinuxProcessBackend backend(ProcessSpec{
+        fixture,
+        {"emit-stderr", secret},
+        StderrCaptureOptions{capture_limit, {secret}},
+    });
+
+    const auto attempt = backend.spawn();
+    expect(attempt.started, "stderr fixture must start");
+    expect(backend.wait_for_exit(attempt.child_id, std::chrono::seconds{3}), "high-volume stderr fixture must not block on a full pipe");
+
+    const auto snapshot = wait_for_complete_stderr(backend, attempt.child_id, std::chrono::seconds{2});
+    expect(snapshot.text.size() <= capture_limit, "exposed stderr must respect the configured byte bound");
+    expect(snapshot.truncated, "high-volume stderr must report truncation");
+    expect(snapshot.text.find(secret) == std::string::npos, "configured secret literal must never be exposed");
+    expect(snapshot.text.find("[redacted]") != std::string::npos, "configured secret literal must be replaced");
+    expect(backend.reap(attempt.child_id), "completed stderr fixture must be reaped");
+}
+
+void test_truncation_drops_partial_secret_suffix(const std::string& fixture)
+{
+    const std::string secret = "boundary-secret-value";
+    const std::string prefix = "diagnostic-before-";
+    const auto capture_limit = prefix.size() + (secret.size() / 2);
+    LinuxProcessBackend backend(ProcessSpec{
+        fixture,
+        {"emit-stderr", secret},
+        StderrCaptureOptions{capture_limit, {secret}},
+    });
+
+    const auto attempt = backend.spawn();
+    expect(attempt.started, "boundary redaction fixture must start");
+    expect(backend.wait_for_exit(attempt.child_id, std::chrono::seconds{3}), "boundary fixture must exit while stderr is drained");
+
+    const auto snapshot = wait_for_complete_stderr(backend, attempt.child_id, std::chrono::seconds{2});
+    expect(snapshot.truncated, "boundary fixture must be truncated");
+    expect(snapshot.text == prefix, "partial configured secret at capture boundary must be removed");
+    expect(backend.reap(attempt.child_id), "boundary fixture must be reaped");
+}
+
 void test_graceful_stop_owns_group_and_reaps_process_tree(const std::string& fixture)
 {
     const auto marker = marker_path("tree-graceful");
     (void)std::remove(marker.c_str());
 
-    LinuxProcessBackend backend(ProcessSpec{fixture, {"tree-graceful", marker}});
+    LinuxProcessBackend backend(ProcessSpec{
+        fixture,
+        {"tree-graceful", marker},
+        std::nullopt,
+    });
     SpawnAdmissionGate gate;
     ProcessSupervisor supervisor(backend, gate, true);
 
@@ -128,7 +216,11 @@ void test_timeout_escalates_to_group_sigkill(const std::string& fixture)
     const auto marker = marker_path("ignore-term");
     (void)std::remove(marker.c_str());
 
-    LinuxProcessBackend backend(ProcessSpec{fixture, {"ignore-term", marker}});
+    LinuxProcessBackend backend(ProcessSpec{
+        fixture,
+        {"ignore-term", marker},
+        std::nullopt,
+    });
     SpawnAdmissionGate gate;
     ProcessSupervisor supervisor(backend, gate, true);
 
@@ -168,6 +260,9 @@ int main(const int argc, char** argv)
     try {
         const std::string fixture(argv[1]);
         test_real_missing_executable_is_classified();
+        test_invalid_stderr_capture_is_fail_closed(fixture);
+        test_bounded_stderr_is_drained_and_redacted(fixture);
+        test_truncation_drops_partial_secret_suffix(fixture);
         test_graceful_stop_owns_group_and_reaps_process_tree(fixture);
         test_timeout_escalates_to_group_sigkill(fixture);
         std::cout << "mssv Linux process backend integration tests: ok\n";

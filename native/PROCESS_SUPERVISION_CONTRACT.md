@@ -4,7 +4,7 @@ This directory begins Phase 1 of the MSSV native C++ migration. It is intentiona
 
 ## First seam
 
-The first native seam covers process-start classification, admission policy, lifecycle observability, and a narrow child-process lifecycle contract. It includes a real Linux backend for integration testing, but it does not alter the shipping TS3AudioBot runtime and does not yet supervise production FFmpeg processes.
+The first native seam covers process-start classification, admission policy, lifecycle observability, bounded diagnostic stderr, and a narrow child-process lifecycle contract. It includes a real Linux backend for integration testing, but it does not alter the shipping TS3AudioBot runtime and does not yet supervise production FFmpeg processes.
 
 The managed reference behavior is `TS3AudioBot/Audio/FfmpegStartAdmissionGate.cs` plus the FFmpeg process-start classification in `TS3AudioBot/Audio/FfmpegProducer.cs`. Shared classification/admission expectations live in `conformance/process_supervision_v1.tsv` and are consumed by both managed and native tests.
 
@@ -37,59 +37,60 @@ The native contract currently requires:
 
 `ProcessSupervisionMetrics` is a native, thread-safe in-memory metrics surface. The supervisor can update it without changing existing callers because the metrics sink is optional.
 
-The current snapshot exposes:
-
-- active children;
-- total successful starts;
-- admission-denied starts;
-- total start failures;
-- resource-exhaustion start failures;
-- missing-executable failures;
-- other native start failures;
-- observed exits;
-- successful forced-kill requests;
-- incomplete cleanup failures.
+The current snapshot exposes active children, successful starts, admission-denied starts, total and categorized start failures, observed exits, successful forced-kill requests, and incomplete cleanup failures.
 
 Counters use relaxed atomics because they are observability signals rather than synchronization primitives. Active-child decrement is saturating, so an unexpected reap event cannot wrap the gauge below zero. An unreaped child remains visible as active and incomplete cleanup increments the cleanup-failure counter.
+
+## Bounded stderr diagnostics
+
+`LinuxProcessBackend` can optionally capture child stderr for diagnostics. Capture is disabled unless `ProcessSpec::stderr_capture` is configured.
+
+The diagnostic contract is deliberately fail-closed and bounded:
+
+- capture uses a dedicated pipe and background drain thread, so storing only a small diagnostic prefix does not allow a noisy child to block after filling the pipe;
+- exposed text is capped at the configured byte limit, with a hard implementation ceiling of 64 KiB per child;
+- at most 32 explicit literal redaction values are accepted and each literal is capped at 4096 bytes;
+- configured literals are replaced before any diagnostic snapshot is exposed;
+- if truncation cuts through a configured secret literal, the matching partial suffix is removed rather than exposed;
+- invalid capture bounds/configuration fail before the child is spawned;
+- pipe descriptors are kept above stdin/stdout/stderr before `posix_spawn` file actions are installed, avoiding accidental standard-stream descriptor aliasing;
+- the child receives only the pipe write end as stderr; the parent closes its write copy after spawn;
+- raw captured text remains private to the backend and the public snapshot API returns only redacted text plus `truncated` and `complete` state.
+
+This is diagnostic plumbing, not a general logging subsystem. No command-line arguments, environment values, credentials, or customer data are automatically emitted by this code.
 
 ## Safety boundary
 
 The native library remains non-shipping. Nothing in this directory is linked into the shipping TS3AudioBot executable, and CI must not require production credentials, customer configuration, private topology, or mutable production data.
 
-Passing the current Linux tests proves the lifecycle mechanics exercised by the fixtures; it does **not** yet prove production FFmpeg compatibility, stderr capture behavior, cgroup/systemd shutdown behavior, resource limits, long-running playback behavior, or safe canary rollback.
+Passing the current Linux tests proves the lifecycle and diagnostic mechanics exercised by the fixtures; it does **not** yet prove production FFmpeg compatibility, cgroup/systemd shutdown behavior, resource limits, long-running playback behavior, or safe canary rollback.
 
 ## Failure-injection coverage
 
-Deterministic native tests currently inject:
-
-- Linux EAGAIN/resource exhaustion and admission cooldown;
-- missing executable/native error 2 without resource cooldown;
-- generic native spawn failure after a half-open probe;
-- graceful cancellation cleanup;
-- timeout escalation to force-kill and reap;
-- failed cleanup where exit/reap cannot be confirmed;
-- failed terminate request followed by deterministic escalation;
-- metrics behavior for successful lifecycle, resource pressure plus admission denial, categorized start failures, and incomplete forced cleanup.
+Deterministic native tests cover Linux EAGAIN/resource exhaustion and admission cooldown, missing executable/native error 2, generic native spawn failure, graceful cancellation, timeout escalation, failed cleanup, failed terminate, and lifecycle metrics behavior.
 
 ## Linux integration coverage
 
 Real Linux integration tests verify:
 
 - a missing executable is surfaced as real `ENOENT` through the backend;
-- a spawned child is the leader of its own process group;
-- a descendant inherits that supervised process group;
-- graceful group termination allows the fixture leader to reap its descendant and leaves no orphan descendant behind;
-- a SIGTERM-ignoring process exceeds the grace interval and is then terminated with process-group SIGKILL;
-- successful cleanup removes backend ownership and the process group disappears.
+- a spawned child is the leader of its own process group and descendants inherit that group;
+- graceful group termination leaves no tested orphan descendant behind;
+- a SIGTERM-ignoring process is escalated to process-group SIGKILL;
+- successful cleanup removes backend ownership and the process group disappears;
+- invalid stderr capture configuration fails before spawn;
+- a fixture can emit more than the pipe capacity without deadlocking because stderr is continuously drained;
+- exposed stderr stays within its configured bound and reports truncation;
+- configured literal secrets are redacted even when emitted across separate writes;
+- a secret prefix cut by the capture boundary is dropped rather than exposed.
 
-The process-tree fixture is test-only and contains no production data or credentials.
+The process-tree/stderr fixture is test-only and contains no production data or credentials.
 
 ## Next acceptance work
 
 Before this seam may supervise real FFmpeg children in a canary, add:
 
-1. bounded stderr capture/redaction;
-2. systemd/cgroup-friendly ownership and shutdown verification, including stubborn descendant behavior;
-3. representative CPU, RSS, task/thread, and child-process measurements;
-4. FFmpeg-specific integration coverage using non-sensitive fixtures;
-5. canary integration behind an explicit managed fallback.
+1. systemd/cgroup-friendly ownership and shutdown verification, including stubborn descendant behavior;
+2. representative CPU, RSS, task/thread, and child-process measurements;
+3. FFmpeg-specific integration coverage using non-sensitive fixtures;
+4. canary integration behind an explicit managed fallback.

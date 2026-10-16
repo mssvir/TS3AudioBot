@@ -8,6 +8,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(MSSV_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
+find_package(Threads REQUIRED)
+
 set(MSSV_PROCESS_SUPERVISION_SOURCES
     src/process_spawn_error.cpp
     src/process_supervision_metrics.cpp
@@ -25,6 +27,8 @@ target_include_directories(mssv_process_supervision
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
+
+target_link_libraries(mssv_process_supervision PUBLIC Threads::Threads)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(mssv_process_supervision PRIVATE -Wall -Wextra -Wpedantic -Werror)

@@ -73,15 +73,17 @@ A non-shipping C++20 process-supervision library now defines the first native se
 
 The native target is built with CMake + Ninja and is tested under both GCC and Clang with AddressSanitizer and UndefinedBehaviorSanitizer. It is not linked into the shipping TS3AudioBot runtime and therefore does not change production behavior.
 
-The first cross-implementation contract is now machine-readable in `conformance/process_supervision_v1.tsv`. Both the managed C# tests and native C++ tests consume the same classification and admission-policy values, so drift in EAGAIN classification, cooldown timing, half-open probe behavior, success reset, or non-resource failure handling is detected by CI instead of relying on duplicated hand-maintained expectations.
+The first cross-implementation contract is machine-readable in `conformance/process_supervision_v1.tsv`. Both the managed C# tests and native C++ tests consume the same classification and admission-policy values, so drift in EAGAIN classification, cooldown timing, half-open probe behavior, success reset, or non-resource failure handling is detected by CI instead of relying on duplicated hand-maintained expectations.
 
 A narrow injectable `ProcessBackend`/`ProcessSupervisor` lifecycle boundary covers spawn, terminate, bounded wait, force-kill, and reap policy. Deterministic failure injection covers EAGAIN, missing executable, generic spawn failure, cancellation, timeout escalation, failed terminate, and incomplete cleanup.
 
-A real Linux backend now implements direct `posix_spawn` execution with no shell interpolation, dedicated process-group ownership, bounded non-reaping exit observation, group SIGTERM/SIGKILL, and final leader reaping. Linux integration fixtures verify real ENOENT classification, dedicated process groups, descendant group inheritance, graceful descendant reaping without an orphan, and timeout escalation against a SIGTERM-ignoring process. This remains non-shipping and is not yet connected to production FFmpeg.
+A real Linux backend implements direct `posix_spawn` execution with no shell interpolation, dedicated process-group ownership, bounded non-reaping exit observation, group SIGTERM/SIGKILL, and final leader reaping. Linux integration fixtures verify real ENOENT classification, dedicated process groups, descendant group inheritance, graceful descendant reaping without an orphan, and timeout escalation against a SIGTERM-ignoring process. This remains non-shipping and is not yet connected to production FFmpeg.
 
-Lifecycle observability is now represented by an optional thread-safe `ProcessSupervisionMetrics` sink. It exposes active children, successful starts, admission denials, categorized start failures, observed exits, forced kills, and cleanup failures without changing existing callers. Unreaped children remain visible as active, and incomplete cleanup is counted explicitly.
+Lifecycle observability is represented by an optional thread-safe `ProcessSupervisionMetrics` sink. It exposes active children, successful starts, admission denials, categorized start failures, observed exits, forced kills, and cleanup failures without changing existing callers. Unreaped children remain visible as active, and incomplete cleanup is counted explicitly.
 
-The next Phase 1 work is production-shape validation: bounded stderr capture/redaction, cgroup/systemd shutdown verification including stubborn descendants, representative resource measurements, FFmpeg-specific integration fixtures, then a managed-fallback canary.
+Optional stderr diagnostics are now captured through a continuously drained pipe with a hard 64 KiB per-child ceiling. The backend returns only redacted snapshots, caps literal redaction configuration, fails invalid capture settings before spawn, reports truncation/completeness, and removes a partial configured secret if truncation cuts through it. High-volume integration fixtures verify that a small retained diagnostic prefix does not cause the child to block on a full stderr pipe.
+
+The next Phase 1 work is production-shape validation: cgroup/systemd shutdown verification including stubborn descendants, representative resource measurements, FFmpeg-specific integration fixtures, then a managed-fallback canary.
 
 ## Phase 2 — native audio pipeline
 
@@ -148,7 +150,7 @@ The authoritative public source remains this repository. Private deployment and 
 - [x] Add deterministic failure-injection tests for EAGAIN, missing executable, cancellation, timeout, and child cleanup policy.
 - [x] Add a real Linux process backend plus process-group/orphan cleanup integration tests.
 - [x] Add lifecycle health counters for active children, denied starts, categorized failures, exits, forced kills, and cleanup failures.
-- [ ] Add bounded stderr capture/redaction.
+- [x] Add bounded stderr capture/redaction.
 - [ ] Verify systemd/cgroup shutdown behavior, including stubborn descendants.
 - [ ] Measure CPU, RSS, thread/task count, and child-process behavior under representative playback fan-out.
 - [ ] Add FFmpeg-specific native integration fixtures without production/customer data.
