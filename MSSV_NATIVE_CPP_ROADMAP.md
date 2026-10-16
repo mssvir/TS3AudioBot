@@ -75,7 +75,11 @@ The native target is built with CMake + Ninja and is tested under both GCC and C
 
 The first cross-implementation contract is now machine-readable in `conformance/process_supervision_v1.tsv`. Both the managed C# tests and native C++ tests consume the same classification and admission-policy values, so drift in EAGAIN classification, cooldown timing, half-open probe behavior, success reset, or non-resource failure handling is detected by CI instead of relying on duplicated hand-maintained expectations.
 
-A narrow injectable `ProcessBackend`/`ProcessSupervisor` lifecycle boundary now covers spawn, terminate, bounded wait, force-kill, and reap policy. Deterministic failure injection covers EAGAIN, missing executable, generic spawn failure, cancellation, timeout escalation, failed terminate, and incomplete cleanup. This remains a policy-level fake backend; real Linux process-group/orphan integration is still required before any canary or production linkage.
+A narrow injectable `ProcessBackend`/`ProcessSupervisor` lifecycle boundary covers spawn, terminate, bounded wait, force-kill, and reap policy. Deterministic failure injection covers EAGAIN, missing executable, generic spawn failure, cancellation, timeout escalation, failed terminate, and incomplete cleanup.
+
+A real Linux backend now implements direct `posix_spawn` execution with no shell interpolation, dedicated process-group ownership, bounded non-reaping exit observation, group SIGTERM/SIGKILL, and final leader reaping. Linux integration fixtures verify real ENOENT classification, dedicated process groups, descendant group inheritance, graceful descendant reaping without an orphan, and timeout escalation against a SIGTERM-ignoring process. This remains non-shipping and is not yet connected to production FFmpeg.
+
+The next Phase 1 work is observability and production-shape validation: bounded stderr capture/redaction, lifecycle counters, cgroup/systemd shutdown verification including stubborn descendants, representative resource measurements, FFmpeg-specific integration fixtures, then a managed-fallback canary.
 
 ## Phase 2 — native audio pipeline
 
@@ -140,8 +144,11 @@ The authoritative public source remains this repository. Private deployment and 
 - [x] Implement native process-spawn classification and bounded admission behavior.
 - [x] Add cross-implementation conformance tests for the first seam.
 - [x] Add deterministic failure-injection tests for EAGAIN, missing executable, cancellation, timeout, and child cleanup policy.
-- [ ] Add a real Linux process backend plus process-group/orphan cleanup integration tests.
+- [x] Add a real Linux process backend plus process-group/orphan cleanup integration tests.
+- [ ] Add bounded stderr capture/redaction and lifecycle health counters.
+- [ ] Verify systemd/cgroup shutdown behavior, including stubborn descendants.
 - [ ] Measure CPU, RSS, thread/task count, and child-process behavior under representative playback fan-out.
+- [ ] Add FFmpeg-specific native integration fixtures without production/customer data.
 - [ ] Canary the native seam behind an explicit fallback path before making it default.
 - [ ] Expand migration seam-by-seam only after each prior phase reaches parity.
 
