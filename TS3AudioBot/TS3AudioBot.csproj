@@ -32,6 +32,9 @@
     <GenerateAssemblyInformationalVersionAttribute>false</GenerateAssemblyInformationalVersionAttribute>
     <GenerateAssemblyVersionAttribute>false</GenerateAssemblyVersionAttribute>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+
+    <DotNetScriptToolVersion>1.2.1</DotNetScriptToolVersion>
+    <GitVersionToolVersion>5.12.0</GitVersionToolVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -97,8 +100,8 @@
       <VersionBuildScript Include="build.csx" />
       <VersionBuildOutputFile Include="$(IntermediateOutputPath)Version.g.cs" />
     </ItemGroup>
-    <Exec Command="dotnet tool install --global dotnet-script" IgnoreExitCode="true" />
-    <Exec Command="dotnet tool install --global GitVersion.Tool" IgnoreExitCode="true" />
+    <Exec Command="dotnet tool install --global dotnet-script --version $(DotNetScriptToolVersion)" IgnoreExitCode="true" />
+    <Exec Command="dotnet tool install --global GitVersion.Tool --version $(GitVersionToolVersion)" IgnoreExitCode="true" />
     <Exec Command="dotnet script @(VersionBuildScript) -- @(VersionBuildOutputFile) $(Configuration)" IgnoreExitCode="true">
       <Output TaskParameter="ExitCode" PropertyName="GitverExit" />
     </Exec>
