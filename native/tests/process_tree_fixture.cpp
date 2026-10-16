@@ -46,27 +46,51 @@ bool write_pid_file(const std::string& path, const pid_t process_id)
     return static_cast<bool>(output);
 }
 
-int run_tree_graceful(const std::string& child_pid_path)
+bool install_terminate_handler()
 {
-    const auto child = fork();
-    if (child < 0) {
-        return 10;
-    }
-
-    if (child == 0) {
-        while (true) {
-            pause();
-        }
-    }
-
     struct sigaction action {};
     action.sa_handler = handle_terminate;
     sigemptyset(&action.sa_mask);
     action.sa_flags = 0;
-    if (sigaction(SIGTERM, &action, nullptr) != 0) {
-        (void)kill(child, SIGKILL);
-        (void)waitpid(child, nullptr, 0);
+    return sigaction(SIGTERM, &action, nullptr) == 0;
+}
+
+bool use_default_terminate()
+{
+    struct sigaction action {};
+    action.sa_handler = SIG_DFL;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+    return sigaction(SIGTERM, &action, nullptr) == 0;
+}
+
+bool ignore_terminate()
+{
+    struct sigaction action {};
+    action.sa_handler = SIG_IGN;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+    return sigaction(SIGTERM, &action, nullptr) == 0;
+}
+
+int run_tree_graceful(const std::string& child_pid_path)
+{
+    if (!install_terminate_handler()) {
+        return 10;
+    }
+
+    const auto child = fork();
+    if (child < 0) {
         return 11;
+    }
+
+    if (child == 0) {
+        if (!use_default_terminate()) {
+            _exit(14);
+        }
+        while (true) {
+            pause();
+        }
     }
 
     if (!write_pid_file(child_pid_path, child)) {
@@ -90,13 +114,41 @@ int run_tree_graceful(const std::string& child_pid_path)
     return 0;
 }
 
+int run_tree_stubborn(const std::string& child_pid_path)
+{
+    if (!install_terminate_handler()) {
+        return 40;
+    }
+
+    const auto child = fork();
+    if (child < 0) {
+        return 41;
+    }
+
+    if (child == 0) {
+        if (!ignore_terminate()) {
+            _exit(42);
+        }
+        if (!write_pid_file(child_pid_path, getpid())) {
+            _exit(43);
+        }
+        while (true) {
+            pause();
+        }
+    }
+
+    while (terminate_requested == 0) {
+        pause();
+    }
+
+    // Deliberately exit without reaping or killing the SIGTERM-ignoring descendant.
+    // The supervisor must not declare the owned process group clean until it is gone.
+    return 0;
+}
+
 int run_ignore_term(const std::string& ready_path)
 {
-    struct sigaction action {};
-    action.sa_handler = SIG_IGN;
-    sigemptyset(&action.sa_mask);
-    action.sa_flags = 0;
-    if (sigaction(SIGTERM, &action, nullptr) != 0) {
+    if (!ignore_terminate()) {
         return 20;
     }
 
@@ -138,7 +190,7 @@ int run_emit_stderr(const std::string& secret)
 int main(const int argc, char** argv)
 {
     if (argc != 3) {
-        std::cerr << "usage: process_tree_fixture <tree-graceful|ignore-term|emit-stderr> <value>\n";
+        std::cerr << "usage: process_tree_fixture <tree-graceful|tree-stubborn|ignore-term|emit-stderr> <value>\n";
         return 2;
     }
 
@@ -147,6 +199,9 @@ int main(const int argc, char** argv)
 
     if (mode == "tree-graceful") {
         return run_tree_graceful(value);
+    }
+    if (mode == "tree-stubborn") {
+        return run_tree_stubborn(value);
     }
     if (mode == "ignore-term") {
         return run_ignore_term(value);

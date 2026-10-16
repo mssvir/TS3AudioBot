@@ -75,15 +75,15 @@ The native target is built with CMake + Ninja and is tested under both GCC and C
 
 The first cross-implementation contract is machine-readable in `conformance/process_supervision_v1.tsv`. Both the managed C# tests and native C++ tests consume the same classification and admission-policy values, so drift in EAGAIN classification, cooldown timing, half-open probe behavior, success reset, or non-resource failure handling is detected by CI instead of relying on duplicated hand-maintained expectations.
 
-A narrow injectable `ProcessBackend`/`ProcessSupervisor` lifecycle boundary covers spawn, terminate, bounded wait, force-kill, and reap policy. Deterministic failure injection covers EAGAIN, missing executable, generic spawn failure, cancellation, timeout escalation, failed terminate, and incomplete cleanup.
+A narrow injectable `ProcessBackend`/`ProcessSupervisor` lifecycle boundary covers spawn, terminate, bounded wait, force-kill, and final ownership release. Deterministic failure injection covers EAGAIN, missing executable, generic spawn failure, cancellation, timeout escalation, failed terminate, and incomplete cleanup.
 
-A real Linux backend implements direct `posix_spawn` execution with no shell interpolation, dedicated process-group ownership, bounded non-reaping exit observation, group SIGTERM/SIGKILL, and final leader reaping. Linux integration fixtures verify real ENOENT classification, dedicated process groups, descendant group inheritance, graceful descendant reaping without an orphan, and timeout escalation against a SIGTERM-ignoring process. This remains non-shipping and is not yet connected to production FFmpeg.
+A real Linux backend implements direct `posix_spawn` execution with no shell interpolation and dedicated process-group ownership. Linux cleanup now requires whole-group quiescence rather than direct-leader exit alone: the direct leader may be reaped during the bounded wait, but tracked ownership is not finalized while descendants remain in the process group. A stubborn descendant fixture proves that if the leader exits on SIGTERM while a same-group descendant ignores SIGTERM, the supervisor escalates to group SIGKILL instead of reporting a false graceful cleanup. This remains non-shipping and is not yet connected to production FFmpeg.
 
-Lifecycle observability is represented by an optional thread-safe `ProcessSupervisionMetrics` sink. It exposes active children, successful starts, admission denials, categorized start failures, observed exits, forced kills, and cleanup failures without changing existing callers. Unreaped children remain visible as active, and incomplete cleanup is counted explicitly.
+Lifecycle observability is represented by an optional thread-safe `ProcessSupervisionMetrics` sink. It exposes active children, successful starts, admission denials, categorized start failures, observed exits, forced kills, and cleanup failures without changing existing callers. Unfinalized child/group ownership remains visible as active, and incomplete cleanup is counted explicitly.
 
-Optional stderr diagnostics are now captured through a continuously drained pipe with a hard 64 KiB per-child ceiling. The backend returns only redacted snapshots, caps literal redaction configuration, fails invalid capture settings before spawn, reports truncation/completeness, and removes a partial configured secret if truncation cuts through it. High-volume integration fixtures verify that a small retained diagnostic prefix does not cause the child to block on a full stderr pipe.
+Optional stderr diagnostics are captured through a continuously drained pipe with a hard 64 KiB per-child ceiling. The backend returns only redacted snapshots, caps literal redaction configuration, fails invalid capture settings before spawn, reports truncation/completeness, and removes a partial configured secret if truncation cuts through it. High-volume integration fixtures verify that a small retained diagnostic prefix does not cause the child to block on a full stderr pipe.
 
-The next Phase 1 work is production-shape validation: cgroup/systemd shutdown verification including stubborn descendants, representative resource measurements, FFmpeg-specific integration fixtures, then a managed-fallback canary.
+The next Phase 1 work is production-shape validation: controlled systemd/cgroup unit shutdown verification (including descendants that escape/change process-group or session membership), representative resource measurements, FFmpeg-specific integration fixtures, then a managed-fallback canary.
 
 ## Phase 2 — native audio pipeline
 
@@ -151,7 +151,8 @@ The authoritative public source remains this repository. Private deployment and 
 - [x] Add a real Linux process backend plus process-group/orphan cleanup integration tests.
 - [x] Add lifecycle health counters for active children, denied starts, categorized failures, exits, forced kills, and cleanup failures.
 - [x] Add bounded stderr capture/redaction.
-- [ ] Verify systemd/cgroup shutdown behavior, including stubborn descendants.
+- [x] Verify same-process-group shutdown against a stubborn descendant; leader exit alone must not complete cleanup.
+- [ ] Verify controlled systemd/cgroup unit shutdown behavior, including cgroup cleanup and descendants that change session/process-group membership.
 - [ ] Measure CPU, RSS, thread/task count, and child-process behavior under representative playback fan-out.
 - [ ] Add FFmpeg-specific native integration fixtures without production/customer data.
 - [ ] Canary the native seam behind an explicit fallback path before making it default.
