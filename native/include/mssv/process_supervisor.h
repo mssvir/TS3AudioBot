@@ -61,9 +61,15 @@ struct StopResult {
     }
 };
 
+class ProcessSupervisionMetrics;
+
 class ProcessSupervisor final {
 public:
-    ProcessSupervisor(ProcessBackend& backend, SpawnAdmissionGate& admission_gate, bool is_linux) noexcept;
+    ProcessSupervisor(
+        ProcessBackend& backend,
+        SpawnAdmissionGate& admission_gate,
+        bool is_linux,
+        ProcessSupervisionMetrics* metrics = nullptr) noexcept;
 
     [[nodiscard]] StartResult start();
     [[nodiscard]] StopResult stop(
@@ -76,6 +82,7 @@ private:
     ProcessBackend& backend_;
     SpawnAdmissionGate& admission_gate_;
     bool is_linux_;
+    ProcessSupervisionMetrics* metrics_;
 };
 
 } // namespace mssv::process
