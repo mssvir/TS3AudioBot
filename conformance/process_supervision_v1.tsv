@@ -1,13 +1,13 @@
 # MSSV process supervision conformance fixture v1
-# kind\tname\tvalue...
-classification\tmissing_executable\t2\tany\tmissing_executable
-classification\tlinux_eagain\t11\tlinux\tresource_exhaustion
-classification\tgeneric_native_error\t13\tany\tother_native_error
-policy\tbase_cooldown_ms\t250
-policy\tmax_cooldown_ms\t5000
-policy\tprobe_retry_ms\t250
-policy\tcooldown_sequence_ms\t250,500,1000,2000,4000,5000,5000
-policy\tfresh_concurrent_starts\t2
-policy\tsingle_half_open_probe\ttrue
-policy\tsuccess_resets\ttrue
-policy\tnon_resource_failure_preserves_streak\ttrue
+# kind	name	value...
+classification	missing_executable	2	any	missing_executable
+classification	linux_eagain	11	linux	resource_exhaustion
+classification	generic_native_error	13	any	other_native_error
+policy	base_cooldown_ms	250
+policy	max_cooldown_ms	5000
+policy	probe_retry_ms	250
+policy	cooldown_sequence_ms	250,500,1000,2000,4000,5000,5000
+policy	fresh_concurrent_starts	2
+policy	single_half_open_probe	true
+policy	success_resets	true
+policy	non_resource_failure_preserves_streak	true
