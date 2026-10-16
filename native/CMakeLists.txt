@@ -10,6 +10,7 @@ option(MSSV_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSani
 
 set(MSSV_PROCESS_SUPERVISION_SOURCES
     src/process_spawn_error.cpp
+    src/process_supervision_metrics.cpp
     src/process_supervisor.cpp
     src/spawn_admission_gate.cpp
 )
@@ -60,10 +61,17 @@ add_executable(mssv_process_supervisor_failure_injection_tests
 
 target_link_libraries(mssv_process_supervisor_failure_injection_tests PRIVATE mssv_process_supervision)
 
+add_executable(mssv_process_supervision_metrics_tests
+    tests/process_supervision_metrics_tests.cpp
+)
+
+target_link_libraries(mssv_process_supervision_metrics_tests PRIVATE mssv_process_supervision)
+
 set(MSSV_TEST_TARGETS
     mssv_process_supervision_tests
     mssv_process_supervision_conformance_tests
     mssv_process_supervisor_failure_injection_tests
+    mssv_process_supervision_metrics_tests
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -97,6 +105,7 @@ endforeach()
 add_test(NAME mssv_process_supervision_tests COMMAND mssv_process_supervision_tests)
 add_test(NAME mssv_process_supervision_conformance_tests COMMAND mssv_process_supervision_conformance_tests)
 add_test(NAME mssv_process_supervisor_failure_injection_tests COMMAND mssv_process_supervisor_failure_injection_tests)
+add_test(NAME mssv_process_supervision_metrics_tests COMMAND mssv_process_supervision_metrics_tests)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(
