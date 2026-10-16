@@ -1,10 +1,10 @@
 # MSSV native process-supervision contract
 
-This directory begins Phase 1 of the MSSV native C++ migration. It is intentionally non-shipping: the production TS3AudioBot runtime still uses the managed implementation until explicit parity, failure-mode, Linux integration, canary, and rollback gates are satisfied.
+This directory begins Phase 1 of the MSSV native C++ migration. It is intentionally non-shipping: the production TS3AudioBot runtime still uses the managed implementation until explicit parity, failure-mode, Linux integration, observability, resource, canary, and rollback gates are satisfied.
 
 ## First seam
 
-The first native seam covers process-start classification, admission policy, and a narrow injectable child-process lifecycle contract. It does not execute a native Linux process backend yet and does not alter TeamSpeak, configuration, audio, Web/API, database, authentication, or deployment behavior.
+The first native seam covers process-start classification, admission policy, and a narrow child-process lifecycle contract. It now includes a real Linux backend for integration testing, but it does not alter the shipping TS3AudioBot runtime and does not yet supervise production FFmpeg processes.
 
 The managed reference behavior is `TS3AudioBot/Audio/FfmpegStartAdmissionGate.cs` plus the FFmpeg process-start classification in `TS3AudioBot/Audio/FfmpegProducer.cs`. Shared classification/admission expectations live in `conformance/process_supervision_v1.tsv` and are consumed by both managed and native tests.
 
@@ -21,17 +21,23 @@ The native contract currently requires:
 - a non-resource failure releases the half-open probe but does not erase prior resource-pressure state;
 - cancellation and timeout cleanup request termination first, wait for a bounded grace interval, escalate to force-kill if exit is not observed, then reap;
 - cleanup failure must remain visible and must never be reported as complete;
+- Linux process creation uses direct argv execution rather than shell interpolation;
+- every successfully spawned Linux child leads a dedicated process group owned by the backend;
+- terminate and force-kill signals target the owned process group, not only the leader PID;
+- backend destruction performs best-effort force cleanup of any still-tracked children;
 - injected backend failures must be testable without production credentials, customer data, mutable production state, or live FFmpeg children.
 
 ## Injectable lifecycle boundary
 
-`ProcessBackend` is the narrow ownership boundary for the next native stage. It exposes only spawn, terminate, bounded wait, force-kill, and reap operations. `ProcessSupervisor` composes that backend with the admission gate and error classifier.
+`ProcessBackend` is the narrow ownership boundary for the native seam. It exposes only spawn, terminate, bounded wait, force-kill, and reap operations. `ProcessSupervisor` composes that backend with the admission gate and error classifier.
 
-The current backend used by failure-injection tests is deterministic and fake. This deliberately validates lifecycle policy before adding Linux syscalls. Passing these tests does **not** yet prove real process-group ownership, orphan prevention, systemd/cgroup behavior, or FFmpeg integration.
+`LinuxProcessBackend` is the first real backend. It uses `posix_spawn` with `POSIX_SPAWN_SETPGROUP`, inherits the current environment, constructs argv directly, observes exit without prematurely reaping via `waitid(..., WNOWAIT)`, and performs the final leader reap with `waitpid`. Child ownership is reserved before spawn so a successful spawn cannot become untracked because of a post-spawn container allocation.
 
 ## Safety boundary
 
 The native library remains non-shipping. Nothing in this directory is linked into the shipping TS3AudioBot executable, and CI must not require production credentials, customer configuration, private topology, or mutable production data.
+
+Passing the current Linux tests proves the lifecycle mechanics exercised by the fixtures; it does **not** yet prove production FFmpeg compatibility, stderr capture behavior, cgroup/systemd shutdown behavior, resource limits, long-running playback behavior, or safe canary rollback.
 
 ## Failure-injection coverage
 
@@ -45,14 +51,26 @@ Deterministic native tests currently inject:
 - failed cleanup where exit/reap cannot be confirmed;
 - failed terminate request followed by deterministic escalation.
 
+## Linux integration coverage
+
+Real Linux integration tests now verify:
+
+- a missing executable is surfaced as real `ENOENT` through the backend;
+- a spawned child is the leader of its own process group;
+- a descendant inherits that supervised process group;
+- graceful group termination allows the fixture leader to reap its descendant and leaves no orphan descendant behind;
+- a SIGTERM-ignoring process exceeds the grace interval and is then terminated with process-group SIGKILL;
+- successful cleanup removes backend ownership and the process group disappears.
+
+The process-tree fixture is test-only and contains no production data or credentials.
+
 ## Next acceptance work
 
-Before this seam may supervise real FFmpeg children, add:
+Before this seam may supervise real FFmpeg children in a canary, add:
 
-1. a Linux backend with explicit process-group ownership and no shell interpolation;
-2. Linux integration tests for real spawn, timeout, cancellation, process-tree cleanup, and orphan detection;
-3. bounded stderr capture/redaction;
-4. counters for active children, denied starts, failures, exits, forced kills, and cleanup failures;
-5. systemd/cgroup-friendly ownership and shutdown verification;
-6. representative CPU, RSS, task/thread, and child-process measurements;
-7. canary integration behind an explicit managed fallback.
+1. bounded stderr capture/redaction;
+2. counters for active children, denied starts, failures, exits, forced kills, and cleanup failures;
+3. systemd/cgroup-friendly ownership and shutdown verification, including stubborn descendant behavior;
+4. representative CPU, RSS, task/thread, and child-process measurements;
+5. FFmpeg-specific integration coverage using non-sensitive fixtures;
+6. canary integration behind an explicit managed fallback.

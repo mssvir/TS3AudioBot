@@ -8,11 +8,17 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(MSSV_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 
-add_library(mssv_process_supervision STATIC
+set(MSSV_PROCESS_SUPERVISION_SOURCES
     src/process_spawn_error.cpp
     src/process_supervisor.cpp
     src/spawn_admission_gate.cpp
 )
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND MSSV_PROCESS_SUPERVISION_SOURCES src/linux_process_backend.cpp)
+endif()
+
+add_library(mssv_process_supervision STATIC ${MSSV_PROCESS_SUPERVISION_SOURCES})
 
 target_include_directories(mssv_process_supervision
     PUBLIC
@@ -54,10 +60,30 @@ add_executable(mssv_process_supervisor_failure_injection_tests
 
 target_link_libraries(mssv_process_supervisor_failure_injection_tests PRIVATE mssv_process_supervision)
 
-foreach(test_target IN ITEMS
+set(MSSV_TEST_TARGETS
     mssv_process_supervision_tests
     mssv_process_supervision_conformance_tests
-    mssv_process_supervisor_failure_injection_tests)
+    mssv_process_supervisor_failure_injection_tests
+)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(mssv_process_tree_fixture
+        tests/process_tree_fixture.cpp
+    )
+
+    add_executable(mssv_linux_process_backend_integration_tests
+        tests/linux_process_backend_integration_tests.cpp
+    )
+
+    target_link_libraries(mssv_linux_process_backend_integration_tests PRIVATE mssv_process_supervision)
+
+    list(APPEND MSSV_TEST_TARGETS
+        mssv_process_tree_fixture
+        mssv_linux_process_backend_integration_tests
+    )
+endif()
+
+foreach(test_target IN LISTS MSSV_TEST_TARGETS)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(${test_target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
     endif()
@@ -71,3 +97,10 @@ endforeach()
 add_test(NAME mssv_process_supervision_tests COMMAND mssv_process_supervision_tests)
 add_test(NAME mssv_process_supervision_conformance_tests COMMAND mssv_process_supervision_conformance_tests)
 add_test(NAME mssv_process_supervisor_failure_injection_tests COMMAND mssv_process_supervisor_failure_injection_tests)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(
+        NAME mssv_linux_process_backend_integration_tests
+        COMMAND mssv_linux_process_backend_integration_tests $<TARGET_FILE:mssv_process_tree_fixture>
+    )
+endif()
