@@ -74,3 +74,36 @@ jobs:
         run: |
           set -Eeuo pipefail
           ctest --test-dir build/native --output-on-failure
+
+  systemd-cgroup:
+    name: systemd + cgroup v2 cleanup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Ninja
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Build process-tree fixture
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cmake -S native -B build/native-systemd -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build build/native-systemd --target mssv_process_tree_fixture --parallel 2
+
+      - name: Verify transient unit cgroup cleanup
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bash native/tests/systemd_cgroup_integration.sh \
+            build/native-systemd/mssv_process_tree_fixture
