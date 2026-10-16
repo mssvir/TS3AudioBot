@@ -4,10 +4,12 @@
 #error "LinuxProcessBackend is only supported on Linux"
 #endif
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <limits>
+#include <new>
 #include <spawn.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -52,6 +54,12 @@ SpawnAttempt LinuxProcessBackend::spawn()
         }
     }
 
+    try {
+        tracked_children_.reserve(tracked_children_.size() + 1);
+    } catch (const std::bad_alloc&) {
+        return {false, 0, ENOMEM};
+    }
+
     std::vector<std::string> command;
     command.reserve(spec_.arguments.size() + 1);
     command.push_back(spec_.executable);
@@ -93,7 +101,7 @@ SpawnAttempt LinuxProcessBackend::spawn()
     }
 
     const auto child_id = static_cast<ChildId>(process_id);
-    tracked_children_.insert(child_id);
+    tracked_children_.push_back(child_id);
     return {true, child_id, 0};
 }
 
@@ -148,7 +156,9 @@ bool LinuxProcessBackend::force_kill(const ChildId child_id)
 
 bool LinuxProcessBackend::reap(const ChildId child_id)
 {
-    if (!is_tracked(child_id) || child_id > static_cast<ChildId>(std::numeric_limits<pid_t>::max())) {
+    const auto tracked = std::find(tracked_children_.begin(), tracked_children_.end(), child_id);
+    if (tracked == tracked_children_.end()
+        || child_id > static_cast<ChildId>(std::numeric_limits<pid_t>::max())) {
         return false;
     }
 
@@ -158,7 +168,7 @@ bool LinuxProcessBackend::reap(const ChildId child_id)
     while (true) {
         const auto wait_result = waitpid(process_id, &status, WNOHANG);
         if (wait_result == process_id) {
-            tracked_children_.erase(child_id);
+            tracked_children_.erase(tracked);
             return true;
         }
         if (wait_result == 0) {
@@ -178,7 +188,8 @@ std::size_t LinuxProcessBackend::tracked_child_count() const noexcept
 
 bool LinuxProcessBackend::is_tracked(const ChildId child_id) const noexcept
 {
-    return tracked_children_.find(child_id) != tracked_children_.end();
+    return std::find(tracked_children_.begin(), tracked_children_.end(), child_id)
+        != tracked_children_.end();
 }
 
 bool LinuxProcessBackend::signal_process_group(
