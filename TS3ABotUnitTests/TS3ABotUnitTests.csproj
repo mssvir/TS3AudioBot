@@ -21,4 +21,10 @@
     <ProjectReference Include="..\TSLib\TSLib.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\conformance\process_supervision_v1.tsv"
+          Link="conformance\process_supervision_v1.tsv"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
