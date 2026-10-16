@@ -62,11 +62,19 @@ The diagnostic contract is deliberately fail-closed and bounded:
 
 This is diagnostic plumbing, not a general logging subsystem. No command-line arguments, environment values, credentials, or customer data are automatically emitted by this code.
 
+## Controlled systemd/cgroup validation
+
+CI now includes a dedicated Ubuntu 24.04 systemd + cgroup v2 integration job. It starts the test fixture in a transient systemd service with `KillMode=control-group`, `SendSIGKILL=yes`, and a bounded stop timeout.
+
+The fixture forks a descendant that calls `setsid()`, moves into its own process group/session, deliberately ignores SIGTERM, and records its PID. The test verifies that the descendant is no longer in the service leader's process group while `/proc/<pid>/cgroup` still places it in the transient service cgroup. `systemctl stop` must then remove the descendant and leave no processes in the unit cgroup. This demonstrates the service-envelope behavior required when process-group ownership alone cannot reach a descendant.
+
+This controlled CI result is not a substitute for validating the eventual production unit definition and canary deployment. The production service must preserve equivalent cgroup ownership and stop policy before native supervision can become a default path.
+
 ## Safety boundary
 
 The native library remains non-shipping. Nothing in this directory is linked into the shipping TS3AudioBot executable, and CI must not require production credentials, customer configuration, private topology, or mutable production data.
 
-Passing the current Linux tests proves the lifecycle and diagnostic mechanics exercised by the fixtures; it does **not** yet prove production FFmpeg compatibility, real systemd/cgroup unit behavior, behavior of descendants that deliberately escape the owned process group/session, resource limits, long-running playback behavior, or safe canary rollback.
+Passing the current Linux tests proves the lifecycle, diagnostic, and controlled systemd/cgroup mechanics exercised by the fixtures; it does **not** yet prove production FFmpeg compatibility, actual production unit settings, resource limits, long-running playback behavior, or safe canary rollback.
 
 ## Failure-injection coverage
 
@@ -83,6 +91,7 @@ Real Linux integration tests verify:
 - such a stubborn descendant forces process-group SIGKILL escalation before cleanup can complete;
 - a SIGTERM-ignoring leader is escalated to process-group SIGKILL;
 - successful cleanup removes backend ownership and the process group disappears;
+- a descendant that escapes into a new session/process group remains inside the transient systemd service cgroup and is removed by `KillMode=control-group` stop escalation;
 - invalid stderr capture configuration fails before spawn;
 - a fixture can emit more than the pipe capacity without deadlocking because stderr is continuously drained;
 - exposed stderr stays within its configured bound and reports truncation;
@@ -95,7 +104,6 @@ The process-tree/stderr fixture is test-only and contains no production data or 
 
 Before this seam may supervise real FFmpeg children in a canary, add:
 
-1. controlled systemd/cgroup unit shutdown verification, including cgroup cleanup and descendants that change session/process-group membership;
-2. representative CPU, RSS, task/thread, and child-process measurements;
-3. FFmpeg-specific integration coverage using non-sensitive fixtures;
-4. canary integration behind an explicit managed fallback.
+1. representative CPU, RSS, task/thread, and child-process measurements;
+2. FFmpeg-specific integration coverage using non-sensitive fixtures;
+3. canary integration behind an explicit managed fallback, including validation of the actual production systemd/cgroup unit policy.
