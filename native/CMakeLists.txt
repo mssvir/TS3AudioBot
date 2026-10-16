@@ -7,6 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(MSSV_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+set(MSSV_FFMPEG_EXECUTABLE "" CACHE FILEPATH "FFmpeg executable for native integration tests")
 
 find_package(Threads REQUIRED)
 
@@ -86,12 +87,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(mssv_linux_process_backend_integration_tests
         tests/linux_process_backend_integration_tests.cpp
     )
-
     target_link_libraries(mssv_linux_process_backend_integration_tests PRIVATE mssv_process_supervision)
+
+    add_executable(mssv_ffmpeg_process_integration_tests
+        tests/ffmpeg_process_integration_tests.cpp
+    )
+    target_link_libraries(mssv_ffmpeg_process_integration_tests PRIVATE mssv_process_supervision)
+
+    add_executable(mssv_ffmpeg_resource_baseline
+        tests/ffmpeg_resource_baseline.cpp
+    )
+    target_link_libraries(mssv_ffmpeg_resource_baseline PRIVATE mssv_process_supervision)
 
     list(APPEND MSSV_TEST_TARGETS
         mssv_process_tree_fixture
         mssv_linux_process_backend_integration_tests
+        mssv_ffmpeg_process_integration_tests
+        mssv_ffmpeg_resource_baseline
     )
 endif()
 
@@ -116,4 +128,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         NAME mssv_linux_process_backend_integration_tests
         COMMAND mssv_linux_process_backend_integration_tests $<TARGET_FILE:mssv_process_tree_fixture>
     )
+
+    if(MSSV_FFMPEG_EXECUTABLE)
+        add_test(
+            NAME mssv_ffmpeg_process_integration_tests
+            COMMAND mssv_ffmpeg_process_integration_tests ${MSSV_FFMPEG_EXECUTABLE}
+        )
+    endif()
 endif()
