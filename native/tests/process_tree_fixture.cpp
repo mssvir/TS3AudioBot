@@ -4,6 +4,7 @@
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -15,6 +16,23 @@ volatile std::sig_atomic_t terminate_requested = 0;
 extern "C" void handle_terminate(int)
 {
     terminate_requested = 1;
+}
+
+bool write_all(const int descriptor, const std::string_view text)
+{
+    std::size_t offset{0};
+    while (offset < text.size()) {
+        const auto written = write(descriptor, text.data() + offset, text.size() - offset);
+        if (written > 0) {
+            offset += static_cast<std::size_t>(written);
+            continue;
+        }
+        if (written < 0 && errno == EINTR) {
+            continue;
+        }
+        return false;
+    }
+    return true;
 }
 
 bool write_pid_file(const std::string& path, const pid_t process_id)
@@ -91,23 +109,50 @@ int run_ignore_term(const std::string& ready_path)
     }
 }
 
+int run_emit_stderr(const std::string& secret)
+{
+    if (!write_all(STDERR_FILENO, "diagnostic-before-")) {
+        return 30;
+    }
+
+    const auto split = secret.size() / 2;
+    if (!write_all(STDERR_FILENO, std::string_view(secret).substr(0, split))) {
+        return 31;
+    }
+    if (!write_all(STDERR_FILENO, std::string_view(secret).substr(split))) {
+        return 32;
+    }
+
+    const std::string chunk(4096, 'X');
+    for (int index = 0; index < 256; ++index) {
+        if (!write_all(STDERR_FILENO, chunk)) {
+            return 33;
+        }
+    }
+
+    return 0;
+}
+
 } // namespace
 
 int main(const int argc, char** argv)
 {
     if (argc != 3) {
-        std::cerr << "usage: process_tree_fixture <tree-graceful|ignore-term> <marker-path>\n";
+        std::cerr << "usage: process_tree_fixture <tree-graceful|ignore-term|emit-stderr> <value>\n";
         return 2;
     }
 
     const std::string mode(argv[1]);
-    const std::string marker_path(argv[2]);
+    const std::string value(argv[2]);
 
     if (mode == "tree-graceful") {
-        return run_tree_graceful(marker_path);
+        return run_tree_graceful(value);
     }
     if (mode == "ignore-term") {
-        return run_ignore_term(marker_path);
+        return run_ignore_term(value);
+    }
+    if (mode == "emit-stderr") {
+        return run_emit_stderr(value);
     }
 
     std::cerr << "unknown mode\n";
