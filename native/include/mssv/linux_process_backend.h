@@ -4,7 +4,6 @@
 
 #include <cstddef>
 #include <string>
-#include <unordered_set>
 #include <vector>
 
 namespace mssv::process {
@@ -38,7 +37,7 @@ private:
     void cleanup_tracked_children() noexcept;
 
     ProcessSpec spec_;
-    std::unordered_set<ChildId> tracked_children_;
+    std::vector<ChildId> tracked_children_;
 };
 
 } // namespace mssv::process
