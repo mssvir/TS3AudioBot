@@ -75,6 +75,8 @@ The native target is built with CMake + Ninja and is tested under both GCC and C
 
 The first cross-implementation contract is now machine-readable in `conformance/process_supervision_v1.tsv`. Both the managed C# tests and native C++ tests consume the same classification and admission-policy values, so drift in EAGAIN classification, cooldown timing, half-open probe behavior, success reset, or non-resource failure handling is detected by CI instead of relying on duplicated hand-maintained expectations.
 
+A narrow injectable `ProcessBackend`/`ProcessSupervisor` lifecycle boundary now covers spawn, terminate, bounded wait, force-kill, and reap policy. Deterministic failure injection covers EAGAIN, missing executable, generic spawn failure, cancellation, timeout escalation, failed terminate, and incomplete cleanup. This remains a policy-level fake backend; real Linux process-group/orphan integration is still required before any canary or production linkage.
+
 ## Phase 2 — native audio pipeline
 
 Move timing, buffering, Opus/audio flow, and related hot paths behind a stable interface.
@@ -137,7 +139,8 @@ The authoritative public source remains this repository. Private deployment and 
 - [x] Add a minimal C++ build/test skeleton without changing the shipping runtime.
 - [x] Implement native process-spawn classification and bounded admission behavior.
 - [x] Add cross-implementation conformance tests for the first seam.
-- [ ] Add failure-injection tests for EAGAIN, missing executable, cancellation, timeout, and child cleanup.
+- [x] Add deterministic failure-injection tests for EAGAIN, missing executable, cancellation, timeout, and child cleanup policy.
+- [ ] Add a real Linux process backend plus process-group/orphan cleanup integration tests.
 - [ ] Measure CPU, RSS, thread/task count, and child-process behavior under representative playback fan-out.
 - [ ] Canary the native seam behind an explicit fallback path before making it default.
 - [ ] Expand migration seam-by-seam only after each prior phase reaches parity.
