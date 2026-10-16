@@ -77,13 +77,15 @@ The first cross-implementation contract is machine-readable in `conformance/proc
 
 A narrow injectable `ProcessBackend`/`ProcessSupervisor` lifecycle boundary covers spawn, terminate, bounded wait, force-kill, and final ownership release. Deterministic failure injection covers EAGAIN, missing executable, generic spawn failure, cancellation, timeout escalation, failed terminate, and incomplete cleanup.
 
-A real Linux backend implements direct `posix_spawn` execution with no shell interpolation and dedicated process-group ownership. Linux cleanup now requires whole-group quiescence rather than direct-leader exit alone: the direct leader may be reaped during the bounded wait, but tracked ownership is not finalized while descendants remain in the process group. A stubborn descendant fixture proves that if the leader exits on SIGTERM while a same-group descendant ignores SIGTERM, the supervisor escalates to group SIGKILL instead of reporting a false graceful cleanup. This remains non-shipping and is not yet connected to production FFmpeg.
+A real Linux backend implements direct `posix_spawn` execution with no shell interpolation and dedicated process-group ownership. Linux cleanup requires whole-group quiescence rather than direct-leader exit alone: the direct leader may be reaped during the bounded wait, but tracked ownership is not finalized while descendants remain in the process group. A stubborn descendant fixture proves that if the leader exits on SIGTERM while a same-group descendant ignores SIGTERM, the supervisor escalates to group SIGKILL instead of reporting a false graceful cleanup. This remains non-shipping and is not yet connected to production FFmpeg.
 
 Lifecycle observability is represented by an optional thread-safe `ProcessSupervisionMetrics` sink. It exposes active children, successful starts, admission denials, categorized start failures, observed exits, forced kills, and cleanup failures without changing existing callers. Unfinalized child/group ownership remains visible as active, and incomplete cleanup is counted explicitly.
 
 Optional stderr diagnostics are captured through a continuously drained pipe with a hard 64 KiB per-child ceiling. The backend returns only redacted snapshots, caps literal redaction configuration, fails invalid capture settings before spawn, reports truncation/completeness, and removes a partial configured secret if truncation cuts through it. High-volume integration fixtures verify that a small retained diagnostic prefix does not cause the child to block on a full stderr pipe.
 
-The next Phase 1 work is production-shape validation: controlled systemd/cgroup unit shutdown verification (including descendants that escape/change process-group or session membership), representative resource measurements, FFmpeg-specific integration fixtures, then a managed-fallback canary.
+Controlled systemd/cgroup validation now runs in native CI on an Ubuntu 24.04 cgroup v2 runner. A transient service uses `KillMode=control-group`, a bounded stop timeout, and SIGKILL escalation. Its test descendant calls `setsid()`, leaves the service leader's process group/session, and ignores SIGTERM while remaining in the unit cgroup. CI verifies that `systemctl stop` removes that descendant and empties the service cgroup. This validates the intended service envelope in controlled CI, while the eventual production unit configuration still must be checked during canary rollout.
+
+The next Phase 1 work is representative resource measurement, FFmpeg-specific integration fixtures, then a managed-fallback canary with actual production unit-policy validation.
 
 ## Phase 2 — native audio pipeline
 
@@ -152,10 +154,10 @@ The authoritative public source remains this repository. Private deployment and 
 - [x] Add lifecycle health counters for active children, denied starts, categorized failures, exits, forced kills, and cleanup failures.
 - [x] Add bounded stderr capture/redaction.
 - [x] Verify same-process-group shutdown against a stubborn descendant; leader exit alone must not complete cleanup.
-- [ ] Verify controlled systemd/cgroup unit shutdown behavior, including cgroup cleanup and descendants that change session/process-group membership.
+- [x] Verify controlled systemd/cgroup v2 unit shutdown behavior against a descendant that changes session/process-group membership.
 - [ ] Measure CPU, RSS, thread/task count, and child-process behavior under representative playback fan-out.
 - [ ] Add FFmpeg-specific native integration fixtures without production/customer data.
-- [ ] Canary the native seam behind an explicit fallback path before making it default.
+- [ ] Canary the native seam behind an explicit fallback path before making it default, including actual production unit-policy validation.
 - [ ] Expand migration seam-by-seam only after each prior phase reaches parity.
 
 ## Definition of done
