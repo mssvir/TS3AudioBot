@@ -55,6 +55,15 @@ bool install_terminate_handler()
     return sigaction(SIGTERM, &action, nullptr) == 0;
 }
 
+bool use_default_terminate()
+{
+    struct sigaction action {};
+    action.sa_handler = SIG_DFL;
+    sigemptyset(&action.sa_mask);
+    action.sa_flags = 0;
+    return sigaction(SIGTERM, &action, nullptr) == 0;
+}
+
 bool ignore_terminate()
 {
     struct sigaction action {};
@@ -76,6 +85,9 @@ int run_tree_graceful(const std::string& child_pid_path)
     }
 
     if (child == 0) {
+        if (!use_default_terminate()) {
+            _exit(14);
+        }
         while (true) {
             pause();
         }
