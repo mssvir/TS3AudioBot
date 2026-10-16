@@ -10,6 +10,7 @@ option(MSSV_ENABLE_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSani
 
 add_library(mssv_process_supervision STATIC
     src/process_spawn_error.cpp
+    src/process_supervisor.cpp
     src/spawn_admission_gate.cpp
 )
 
@@ -47,7 +48,16 @@ add_executable(mssv_process_supervision_conformance_tests
 
 target_link_libraries(mssv_process_supervision_conformance_tests PRIVATE mssv_process_supervision)
 
-foreach(test_target IN ITEMS mssv_process_supervision_tests mssv_process_supervision_conformance_tests)
+add_executable(mssv_process_supervisor_failure_injection_tests
+    tests/process_supervisor_failure_injection_tests.cpp
+)
+
+target_link_libraries(mssv_process_supervisor_failure_injection_tests PRIVATE mssv_process_supervision)
+
+foreach(test_target IN ITEMS
+    mssv_process_supervision_tests
+    mssv_process_supervision_conformance_tests
+    mssv_process_supervisor_failure_injection_tests)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         target_compile_options(${test_target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
     endif()
@@ -60,3 +70,4 @@ endforeach()
 
 add_test(NAME mssv_process_supervision_tests COMMAND mssv_process_supervision_tests)
 add_test(NAME mssv_process_supervision_conformance_tests COMMAND mssv_process_supervision_conformance_tests)
+add_test(NAME mssv_process_supervisor_failure_injection_tests COMMAND mssv_process_supervisor_failure_injection_tests)
