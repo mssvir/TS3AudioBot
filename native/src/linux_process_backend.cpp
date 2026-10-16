@@ -39,6 +39,15 @@ bool contains_embedded_null(const std::string& value) noexcept
     return value.find('\0') != std::string::npos;
 }
 
+bool process_group_absent(const pid_t process_group) noexcept
+{
+    errno = 0;
+    if (kill(-process_group, 0) == 0) {
+        return false;
+    }
+    return errno == ESRCH;
+}
+
 bool promote_descriptor_above_standard_streams(int& descriptor) noexcept
 {
     if (descriptor > STDERR_FILENO) {
@@ -320,6 +329,7 @@ private:
 
 struct LinuxProcessBackend::TrackedChild {
     ChildId child_id{0};
+    bool leader_reaped{false};
     std::unique_ptr<StderrCapture> stderr_capture;
 };
 
@@ -455,7 +465,10 @@ bool LinuxProcessBackend::wait_for_exit(
     const ChildId child_id,
     const std::chrono::milliseconds timeout)
 {
-    if (!is_tracked(child_id) || child_id > static_cast<ChildId>(std::numeric_limits<pid_t>::max())) {
+    auto* tracked = find_tracked(child_id);
+    if (tracked == nullptr
+        || child_id == 0
+        || child_id > static_cast<ChildId>(std::numeric_limits<pid_t>::max())) {
         return false;
     }
 
@@ -466,18 +479,21 @@ bool LinuxProcessBackend::wait_for_exit(
     const auto deadline = std::chrono::steady_clock::now() + bounded_timeout;
 
     while (true) {
-        siginfo_t info{};
-        const auto wait_result = waitid(
-            P_PID,
-            static_cast<id_t>(process_id),
-            &info,
-            WEXITED | WNOHANG | WNOWAIT);
-
-        if (wait_result == 0 && info.si_pid == process_id) {
-            return true;
+        if (!tracked->leader_reaped) {
+            int status{0};
+            const auto wait_result = waitpid(process_id, &status, WNOHANG);
+            if (wait_result == process_id) {
+                tracked->leader_reaped = true;
+            } else if (wait_result < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                return false;
+            }
         }
-        if (wait_result != 0 && errno != EINTR) {
-            return false;
+
+        if (tracked->leader_reaped && process_group_absent(process_id)) {
+            return true;
         }
 
         const auto now = std::chrono::steady_clock::now();
@@ -502,27 +518,36 @@ bool LinuxProcessBackend::reap(const ChildId child_id)
         tracked_children_.end(),
         [child_id](const auto& child) { return child->child_id == child_id; });
     if (tracked == tracked_children_.end()
+        || child_id == 0
         || child_id > static_cast<ChildId>(std::numeric_limits<pid_t>::max())) {
         return false;
     }
 
     const auto process_id = static_cast<pid_t>(child_id);
-    int status{0};
-
-    while (true) {
-        const auto wait_result = waitpid(process_id, &status, WNOHANG);
-        if (wait_result == process_id) {
-            tracked_children_.erase(tracked);
-            return true;
-        }
-        if (wait_result == 0) {
+    if (!(*tracked)->leader_reaped) {
+        int status{0};
+        while (true) {
+            const auto wait_result = waitpid(process_id, &status, WNOHANG);
+            if (wait_result == process_id) {
+                (*tracked)->leader_reaped = true;
+                break;
+            }
+            if (wait_result == 0) {
+                return false;
+            }
+            if (wait_result < 0 && errno == EINTR) {
+                continue;
+            }
             return false;
         }
-        if (wait_result < 0 && errno == EINTR) {
-            continue;
-        }
+    }
+
+    if (!process_group_absent(process_id)) {
         return false;
     }
+
+    tracked_children_.erase(tracked);
+    return true;
 }
 
 std::size_t LinuxProcessBackend::tracked_child_count() const noexcept
@@ -589,6 +614,10 @@ void LinuxProcessBackend::cleanup_tracked_children() noexcept
     }
 
     for (const auto& child : tracked_children_) {
+        if (child->leader_reaped) {
+            continue;
+        }
+
         const auto child_id = child->child_id;
         if (child_id == 0 || child_id > static_cast<ChildId>(std::numeric_limits<pid_t>::max())) {
             continue;
