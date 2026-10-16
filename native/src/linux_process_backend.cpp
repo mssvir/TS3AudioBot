@@ -5,12 +5,17 @@
 #endif
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <limits>
+#include <mutex>
 #include <new>
+#include <poll.h>
 #include <spawn.h>
+#include <system_error>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <thread>
@@ -24,13 +29,239 @@ namespace mssv::process {
 namespace {
 
 constexpr auto wait_poll_interval = std::chrono::milliseconds{5};
+constexpr auto stderr_poll_interval = std::chrono::milliseconds{20};
+constexpr std::string_view redaction_marker = "[redacted]";
 
 bool contains_embedded_null(const std::string& value) noexcept
 {
     return value.find('\0') != std::string::npos;
 }
 
+std::string redact_text(std::string text, const std::vector<std::string>& literals)
+{
+    for (const auto& literal : literals) {
+        if (literal.empty()) {
+            continue;
+        }
+
+        std::size_t position{0};
+        while ((position = text.find(literal, position)) != std::string::npos) {
+            text.replace(position, literal.size(), redaction_marker);
+            position += redaction_marker.size();
+        }
+    }
+    return text;
+}
+
+class StderrCapture final {
+public:
+    static std::unique_ptr<StderrCapture> create(
+        const StderrCaptureOptions& options,
+        int& native_error)
+    {
+        native_error = 0;
+        if (options.max_bytes == 0 || options.max_bytes > max_stderr_capture_bytes) {
+            native_error = EINVAL;
+            return nullptr;
+        }
+        if (options.redact_literals.size() > max_stderr_redaction_literals) {
+            native_error = EINVAL;
+            return nullptr;
+        }
+
+        std::size_t longest_literal{0};
+        for (const auto& literal : options.redact_literals) {
+            if (literal.size() > max_stderr_redaction_literal_bytes) {
+                native_error = EINVAL;
+                return nullptr;
+            }
+            longest_literal = std::max(longest_literal, literal.size());
+        }
+
+        int descriptors[2]{-1, -1};
+        if (pipe2(descriptors, O_CLOEXEC) != 0) {
+            native_error = errno;
+            return nullptr;
+        }
+
+        std::unique_ptr<StderrCapture> capture;
+        try {
+            capture = std::unique_ptr<StderrCapture>(new StderrCapture(
+                options.max_bytes,
+                longest_literal,
+                options.redact_literals,
+                descriptors[0],
+                descriptors[1]));
+            capture->reader_ = std::thread([capture_ptr = capture.get()] {
+                capture_ptr->drain();
+            });
+        } catch (const std::bad_alloc&) {
+            (void)close(descriptors[0]);
+            (void)close(descriptors[1]);
+            native_error = ENOMEM;
+            return nullptr;
+        } catch (const std::system_error& error) {
+            (void)close(descriptors[0]);
+            (void)close(descriptors[1]);
+            native_error = error.code().value() != 0 ? error.code().value() : EAGAIN;
+            return nullptr;
+        }
+
+        return capture;
+    }
+
+    ~StderrCapture()
+    {
+        close_parent_write();
+        stop_.store(true, std::memory_order_relaxed);
+        if (reader_.joinable()) {
+            reader_.join();
+        }
+        if (read_fd_ >= 0) {
+            (void)close(read_fd_);
+        }
+    }
+
+    [[nodiscard]] int read_fd() const noexcept
+    {
+        return read_fd_;
+    }
+
+    [[nodiscard]] int write_fd() const noexcept
+    {
+        return write_fd_;
+    }
+
+    void close_parent_write() noexcept
+    {
+        if (write_fd_ >= 0) {
+            (void)close(write_fd_);
+            write_fd_ = -1;
+        }
+    }
+
+    [[nodiscard]] StderrSnapshot snapshot() const
+    {
+        std::string raw;
+        bool truncated{false};
+        {
+            std::lock_guard lock(mutex_);
+            raw = buffer_;
+            truncated = truncated_;
+        }
+
+        auto redacted = redact_text(std::move(raw), redact_literals_);
+        if (redacted.size() > max_bytes_) {
+            redacted.resize(max_bytes_);
+            truncated = true;
+        }
+
+        return {
+            std::move(redacted),
+            truncated,
+            complete_.load(std::memory_order_relaxed),
+        };
+    }
+
+private:
+    StderrCapture(
+        const std::size_t max_bytes,
+        const std::size_t longest_literal,
+        std::vector<std::string> redact_literals,
+        const int read_fd,
+        const int write_fd)
+        : max_bytes_(max_bytes),
+          capture_bytes_(max_bytes + longest_literal),
+          redact_literals_(std::move(redact_literals)),
+          read_fd_(read_fd),
+          write_fd_(write_fd)
+    {
+    }
+
+    void drain() noexcept
+    {
+        std::array<char, 4096> chunk{};
+        while (!stop_.load(std::memory_order_relaxed)) {
+            pollfd descriptor{};
+            descriptor.fd = read_fd_;
+            descriptor.events = POLLIN | POLLHUP;
+
+            const auto poll_result = poll(
+                &descriptor,
+                1,
+                static_cast<int>(stderr_poll_interval.count()));
+            if (poll_result < 0) {
+                if (errno == EINTR) {
+                    continue;
+                }
+                break;
+            }
+            if (poll_result == 0) {
+                continue;
+            }
+
+            if ((descriptor.revents & (POLLIN | POLLHUP)) != 0) {
+                const auto bytes_read = read(read_fd_, chunk.data(), chunk.size());
+                if (bytes_read > 0) {
+                    append(chunk.data(), static_cast<std::size_t>(bytes_read));
+                    continue;
+                }
+                if (bytes_read == 0) {
+                    complete_.store(true, std::memory_order_relaxed);
+                    return;
+                }
+                if (errno == EINTR) {
+                    continue;
+                }
+                break;
+            }
+
+            if ((descriptor.revents & (POLLERR | POLLNVAL)) != 0) {
+                break;
+            }
+        }
+    }
+
+    void append(const char* data, const std::size_t size) noexcept
+    {
+        std::lock_guard lock(mutex_);
+        if (buffer_.size() >= capture_bytes_) {
+            truncated_ = true;
+            return;
+        }
+
+        const auto remaining = capture_bytes_ - buffer_.size();
+        const auto accepted = std::min(remaining, size);
+        try {
+            buffer_.append(data, accepted);
+        } catch (...) {
+            truncated_ = true;
+            return;
+        }
+        if (accepted < size) {
+            truncated_ = true;
+        }
+    }
+
+    std::size_t max_bytes_;
+    std::size_t capture_bytes_;
+    std::vector<std::string> redact_literals_;
+    int read_fd_{-1};
+    int write_fd_{-1};
+    mutable std::mutex mutex_;
+    std::string buffer_;
+    bool truncated_{false};
+    std::atomic<bool> stop_{false};
+    std::atomic<bool> complete_{false};
+    std::thread reader_;
+};
+
 } // namespace
+
+struct LinuxProcessBackend::TrackedChild {
+    ChildId child_id{0};
+    std::unique_ptr<StderrCapture> stderr_capture;
+};
 
 LinuxProcessBackend::LinuxProcessBackend(ProcessSpec spec)
     : spec_(std::move(spec))
@@ -60,6 +291,23 @@ SpawnAttempt LinuxProcessBackend::spawn()
         return {false, 0, ENOMEM};
     }
 
+    std::unique_ptr<StderrCapture> stderr_capture;
+    if (spec_.stderr_capture.has_value()) {
+        int capture_error{0};
+        stderr_capture = StderrCapture::create(*spec_.stderr_capture, capture_error);
+        if (stderr_capture == nullptr) {
+            return {false, 0, capture_error != 0 ? capture_error : EIO};
+        }
+    }
+
+    std::unique_ptr<TrackedChild> tracked_child;
+    try {
+        tracked_child = std::make_unique<TrackedChild>();
+    } catch (const std::bad_alloc&) {
+        return {false, 0, ENOMEM};
+    }
+    tracked_child->stderr_capture = std::move(stderr_capture);
+
     std::vector<std::string> command;
     command.reserve(spec_.arguments.size() + 1);
     command.push_back(spec_.executable);
@@ -78,7 +326,32 @@ SpawnAttempt LinuxProcessBackend::spawn()
         return {false, 0, native_error};
     }
 
-    native_error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
+    posix_spawn_file_actions_t file_actions{};
+    bool file_actions_initialized{false};
+    if (tracked_child->stderr_capture != nullptr) {
+        native_error = posix_spawn_file_actions_init(&file_actions);
+        file_actions_initialized = native_error == 0;
+        if (native_error == 0) {
+            native_error = posix_spawn_file_actions_adddup2(
+                &file_actions,
+                tracked_child->stderr_capture->write_fd(),
+                STDERR_FILENO);
+        }
+        if (native_error == 0) {
+            native_error = posix_spawn_file_actions_addclose(
+                &file_actions,
+                tracked_child->stderr_capture->read_fd());
+        }
+        if (native_error == 0) {
+            native_error = posix_spawn_file_actions_addclose(
+                &file_actions,
+                tracked_child->stderr_capture->write_fd());
+        }
+    }
+
+    if (native_error == 0) {
+        native_error = posix_spawnattr_setflags(&attributes, POSIX_SPAWN_SETPGROUP);
+    }
     if (native_error == 0) {
         native_error = posix_spawnattr_setpgroup(&attributes, 0);
     }
@@ -88,20 +361,28 @@ SpawnAttempt LinuxProcessBackend::spawn()
         native_error = posix_spawn(
             &process_id,
             spec_.executable.c_str(),
-            nullptr,
+            file_actions_initialized ? &file_actions : nullptr,
             &attributes,
             argv.data(),
             environ);
     }
 
+    if (file_actions_initialized) {
+        (void)posix_spawn_file_actions_destroy(&file_actions);
+    }
     (void)posix_spawnattr_destroy(&attributes);
+
+    if (tracked_child->stderr_capture != nullptr) {
+        tracked_child->stderr_capture->close_parent_write();
+    }
 
     if (native_error != 0 || process_id <= 0) {
         return {false, 0, native_error != 0 ? native_error : ECHILD};
     }
 
     const auto child_id = static_cast<ChildId>(process_id);
-    tracked_children_.push_back(child_id);
+    tracked_child->child_id = child_id;
+    tracked_children_.push_back(std::move(tracked_child));
     return {true, child_id, 0};
 }
 
@@ -156,7 +437,10 @@ bool LinuxProcessBackend::force_kill(const ChildId child_id)
 
 bool LinuxProcessBackend::reap(const ChildId child_id)
 {
-    const auto tracked = std::find(tracked_children_.begin(), tracked_children_.end(), child_id);
+    const auto tracked = std::find_if(
+        tracked_children_.begin(),
+        tracked_children_.end(),
+        [child_id](const auto& child) { return child->child_id == child_id; });
     if (tracked == tracked_children_.end()
         || child_id > static_cast<ChildId>(std::numeric_limits<pid_t>::max())) {
         return false;
@@ -186,10 +470,37 @@ std::size_t LinuxProcessBackend::tracked_child_count() const noexcept
     return tracked_children_.size();
 }
 
+std::optional<StderrSnapshot> LinuxProcessBackend::stderr_snapshot(const ChildId child_id) const
+{
+    const auto* tracked = find_tracked(child_id);
+    if (tracked == nullptr || tracked->stderr_capture == nullptr) {
+        return std::nullopt;
+    }
+    return tracked->stderr_capture->snapshot();
+}
+
+LinuxProcessBackend::TrackedChild* LinuxProcessBackend::find_tracked(const ChildId child_id) noexcept
+{
+    const auto tracked = std::find_if(
+        tracked_children_.begin(),
+        tracked_children_.end(),
+        [child_id](const auto& child) { return child->child_id == child_id; });
+    return tracked == tracked_children_.end() ? nullptr : tracked->get();
+}
+
+const LinuxProcessBackend::TrackedChild* LinuxProcessBackend::find_tracked(
+    const ChildId child_id) const noexcept
+{
+    const auto tracked = std::find_if(
+        tracked_children_.begin(),
+        tracked_children_.end(),
+        [child_id](const auto& child) { return child->child_id == child_id; });
+    return tracked == tracked_children_.end() ? nullptr : tracked->get();
+}
+
 bool LinuxProcessBackend::is_tracked(const ChildId child_id) const noexcept
 {
-    return std::find(tracked_children_.begin(), tracked_children_.end(), child_id)
-        != tracked_children_.end();
+    return find_tracked(child_id) != nullptr;
 }
 
 bool LinuxProcessBackend::signal_process_group(
@@ -208,7 +519,8 @@ bool LinuxProcessBackend::signal_process_group(
 
 void LinuxProcessBackend::cleanup_tracked_children() noexcept
 {
-    for (const auto child_id : tracked_children_) {
+    for (const auto& child : tracked_children_) {
+        const auto child_id = child->child_id;
         if (child_id == 0 || child_id > static_cast<ChildId>(std::numeric_limits<pid_t>::max())) {
             continue;
         }
@@ -216,7 +528,8 @@ void LinuxProcessBackend::cleanup_tracked_children() noexcept
         (void)kill(-process_id, SIGKILL);
     }
 
-    for (const auto child_id : tracked_children_) {
+    for (const auto& child : tracked_children_) {
+        const auto child_id = child->child_id;
         if (child_id == 0 || child_id > static_cast<ChildId>(std::numeric_limits<pid_t>::max())) {
             continue;
         }
