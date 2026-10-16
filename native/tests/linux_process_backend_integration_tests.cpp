@@ -201,12 +201,50 @@ void test_graceful_stop_owns_group_and_reaps_process_tree(const std::string& fix
         std::chrono::milliseconds{500});
 
     expect(stop.termination_requested, "graceful tree stop must signal the process group");
-    expect(stop.graceful_exit, "graceful tree stop must observe leader exit");
+    expect(stop.graceful_exit, "graceful tree stop must observe process-group quiescence");
     expect(!stop.forced_kill, "graceful tree stop must not require SIGKILL");
-    expect(stop.cleanup_complete(), "graceful tree stop must reap the leader");
+    expect(stop.cleanup_complete(), "graceful tree stop must finish owned-group cleanup");
     expect(backend.tracked_child_count() == 0, "completed cleanup must release tracked ownership");
     expect(wait_for_process_absent(descendant, std::chrono::seconds{2}), "tree descendant must not remain orphaned");
     expect(wait_for_process_group_absent(leader, std::chrono::seconds{2}), "owned process group must disappear after cleanup");
+
+    (void)std::remove(marker.c_str());
+}
+
+void test_stubborn_descendant_prevents_false_graceful_completion(const std::string& fixture)
+{
+    const auto marker = marker_path("tree-stubborn");
+    (void)std::remove(marker.c_str());
+
+    LinuxProcessBackend backend(ProcessSpec{
+        fixture,
+        {"tree-stubborn", marker},
+        std::nullopt,
+    });
+    SpawnAdmissionGate gate;
+    ProcessSupervisor supervisor(backend, gate, true);
+
+    const auto start = supervisor.start();
+    expect(start.status == StartStatus::started, "stubborn tree fixture must start");
+    const auto leader = static_cast<pid_t>(start.child_id);
+    const auto descendant = wait_for_marker_pid(marker, std::chrono::seconds{2});
+    expect(getpgid(descendant) == leader, "stubborn descendant must stay in the owned process group");
+
+    const auto stop = supervisor.stop(
+        start.child_id,
+        StopCause::cancellation,
+        std::chrono::milliseconds{75},
+        std::chrono::seconds{2});
+
+    expect(stop.termination_requested, "stubborn tree stop must request group SIGTERM first");
+    expect(!stop.graceful_exit, "leader exit alone must not count as graceful completion while descendant survives");
+    expect(stop.forced_kill, "surviving descendant must force process-group SIGKILL escalation");
+    expect(stop.exit_observed, "forced cleanup must observe owned process-group quiescence");
+    expect(stop.reaped, "leader ownership must be finalized even if it was reaped during the grace wait");
+    expect(stop.cleanup_complete(), "stubborn descendant cleanup must complete after escalation");
+    expect(backend.tracked_child_count() == 0, "stubborn cleanup must release tracked ownership");
+    expect(wait_for_process_absent(descendant, std::chrono::seconds{2}), "stubborn descendant must not survive cleanup");
+    expect(wait_for_process_group_absent(leader, std::chrono::seconds{2}), "stubborn process group must disappear after cleanup");
 
     (void)std::remove(marker.c_str());
 }
@@ -240,7 +278,7 @@ void test_timeout_escalates_to_group_sigkill(const std::string& fixture)
     expect(!stop.graceful_exit, "SIGTERM-ignoring child must exceed the graceful timeout");
     expect(stop.forced_kill, "timeout path must escalate to process-group SIGKILL");
     expect(stop.exit_observed, "SIGKILL path must observe final exit");
-    expect(stop.reaped, "SIGKILL path must reap the leader");
+    expect(stop.reaped, "SIGKILL path must finalize leader ownership");
     expect(stop.cleanup_complete(), "SIGKILL path must complete cleanup");
     expect(backend.tracked_child_count() == 0, "forced cleanup must release tracked ownership");
     expect(wait_for_process_group_absent(leader, std::chrono::seconds{2}), "forced cleanup process group must disappear");
@@ -264,6 +302,7 @@ int main(const int argc, char** argv)
         test_bounded_stderr_is_drained_and_redacted(fixture);
         test_truncation_drops_partial_secret_suffix(fixture);
         test_graceful_stop_owns_group_and_reaps_process_tree(fixture);
+        test_stubborn_descendant_prevents_false_graceful_completion(fixture);
         test_timeout_escalates_to_group_sigkill(fixture);
         std::cout << "mssv Linux process backend integration tests: ok\n";
         return 0;
