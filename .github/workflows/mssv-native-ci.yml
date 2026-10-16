@@ -1,0 +1,74 @@
+name: MSSV Native CI
+
+on:
+  push:
+    branches:
+      - master
+      - 'mssv/**'
+    paths:
+      - 'native/**'
+      - '.github/workflows/mssv-native-ci.yml'
+      - 'MSSV_NATIVE_CPP_ROADMAP.md'
+  pull_request:
+    branches:
+      - master
+    paths:
+      - 'native/**'
+      - '.github/workflows/mssv-native-ci.yml'
+      - 'MSSV_NATIVE_CPP_ROADMAP.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }} + ASan/UBSan
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: GCC
+            cc: gcc
+            cxx: g++
+          - name: Clang
+            cc: clang
+            cxx: clang++
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Ninja
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Configure
+        shell: bash
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: |
+          set -Eeuo pipefail
+          cmake -S native -B build/native -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DMSSV_ENABLE_SANITIZERS=ON
+
+      - name: Build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          cmake --build build/native --parallel 2
+
+      - name: Test
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          ctest --test-dir build/native --output-on-failure
