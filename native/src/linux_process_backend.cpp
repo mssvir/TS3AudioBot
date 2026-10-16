@@ -86,10 +86,7 @@ SpawnAttempt LinuxProcessBackend::spawn()
             environ);
     }
 
-    const auto destroy_error = posix_spawnattr_destroy(&attributes);
-    if (native_error == 0 && destroy_error != 0) {
-        native_error = destroy_error;
-    }
+    (void)posix_spawnattr_destroy(&attributes);
 
     if (native_error != 0 || process_id <= 0) {
         return {false, 0, native_error != 0 ? native_error : ECHILD};
