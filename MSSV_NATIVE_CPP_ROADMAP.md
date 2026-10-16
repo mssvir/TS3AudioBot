@@ -38,7 +38,7 @@ Golden fixtures and conformance tests should live in this repository and be runn
 
 Native migration and managed-runtime modernization are separate tracks.
 
-At the 2026-10-08 review point, official upstream `Splamy/TS3AudioBot` has an active `develop` branch at `142e4e2fab19f75b8bd00068134992263b6f0c1c`. That reviewed snapshot is substantially ahead of upstream `master` and targets `net10.0`.
+At the 2026-10-16 recheck, official upstream `Splamy/TS3AudioBot` still has `develop` at `142e4e2fab19f75b8bd00068134992263b6f0c1c`. That reviewed snapshot is substantially ahead of upstream `master` and targets `net10.0`.
 
 After the current reliability baseline is accepted, upstream `develop` should be evaluated before adopting unrelated third-party C# forks. A bounded compatibility branch may port this fork's required fixes and tests onto that upstream line so inherited legacy-runtime risk can be reduced while C++ work proceeds.
 
@@ -66,6 +66,12 @@ Acceptance gates:
 - failure paths do not create retry storms;
 - process ownership remains friendly to Linux cgroups/systemd;
 - rollback to the managed path is immediate and explicit.
+
+### Phase 1 bootstrap status — 2026-10-16
+
+A non-shipping C++20 process-supervision library now defines the first native seam. It implements the managed reference contract for missing-executable classification, Linux EAGAIN/resource-exhaustion classification, bounded exponential cooldown, one half-open recovery probe, success reset, and non-resource probe release. The seam is documented in `native/PROCESS_SUPERVISION_CONTRACT.md`.
+
+The native target is built with CMake + Ninja and is tested under both GCC and Clang with AddressSanitizer and UndefinedBehaviorSanitizer. It is not linked into the shipping TS3AudioBot runtime and therefore does not change production behavior.
 
 ## Phase 2 — native audio pipeline
 
@@ -125,9 +131,9 @@ The authoritative public source remains this repository. Private deployment and 
 
 - [ ] Add machine-readable compatibility/conformance fixtures for current C# behavior.
 - [ ] Evaluate the reviewed official upstream `develop` modernization line in a separate compatibility track after the current reliability canary is accepted.
-- [ ] Document the process-supervision seam and its protocol/interface.
-- [ ] Add a minimal C++ build/test skeleton without changing the shipping runtime.
-- [ ] Implement native process-spawn classification and bounded admission behavior.
+- [x] Document the process-supervision seam and its protocol/interface.
+- [x] Add a minimal C++ build/test skeleton without changing the shipping runtime.
+- [x] Implement native process-spawn classification and bounded admission behavior.
 - [ ] Add cross-implementation conformance tests for the first seam.
 - [ ] Add failure-injection tests for EAGAIN, missing executable, cancellation, timeout, and child cleanup.
 - [ ] Measure CPU, RSS, thread/task count, and child-process behavior under representative playback fan-out.
