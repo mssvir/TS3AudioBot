@@ -10,11 +10,13 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <fcntl.h>
 #include <limits>
 #include <mutex>
 #include <new>
 #include <poll.h>
 #include <spawn.h>
+#include <string_view>
 #include <system_error>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -37,8 +39,51 @@ bool contains_embedded_null(const std::string& value) noexcept
     return value.find('\0') != std::string::npos;
 }
 
-std::string redact_text(std::string text, const std::vector<std::string>& literals)
+bool promote_descriptor_above_standard_streams(int& descriptor) noexcept
 {
+    if (descriptor > STDERR_FILENO) {
+        return true;
+    }
+
+    const auto promoted = fcntl(descriptor, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+    if (promoted < 0) {
+        return false;
+    }
+
+    (void)close(descriptor);
+    descriptor = promoted;
+    return true;
+}
+
+void remove_partial_redaction_suffix(
+    std::string& text,
+    const std::vector<std::string>& literals)
+{
+    for (const auto& literal : literals) {
+        if (literal.empty() || text.empty()) {
+            continue;
+        }
+
+        const auto maximum = std::min(text.size(), literal.size() - 1);
+        for (std::size_t length = maximum; length > 0; --length) {
+            if (text.compare(text.size() - length, length, literal, 0, length) == 0) {
+                text.erase(text.size() - length);
+                break;
+            }
+        }
+    }
+}
+
+std::string redact_text(
+    std::string text,
+    const std::vector<std::string>& literals,
+    const bool truncated,
+    const std::size_t max_bytes)
+{
+    if (truncated) {
+        remove_partial_redaction_suffix(text, literals);
+    }
+
     for (const auto& literal : literals) {
         if (literal.empty()) {
             continue;
@@ -49,6 +94,10 @@ std::string redact_text(std::string text, const std::vector<std::string>& litera
             text.replace(position, literal.size(), redaction_marker);
             position += redaction_marker.size();
         }
+    }
+
+    if (text.size() > max_bytes) {
+        text.resize(max_bytes);
     }
     return text;
 }
@@ -69,13 +118,11 @@ public:
             return nullptr;
         }
 
-        std::size_t longest_literal{0};
         for (const auto& literal : options.redact_literals) {
             if (literal.size() > max_stderr_redaction_literal_bytes) {
                 native_error = EINVAL;
                 return nullptr;
             }
-            longest_literal = std::max(longest_literal, literal.size());
         }
 
         int descriptors[2]{-1, -1};
@@ -84,25 +131,41 @@ public:
             return nullptr;
         }
 
+        if (!promote_descriptor_above_standard_streams(descriptors[0])
+            || !promote_descriptor_above_standard_streams(descriptors[1])) {
+            native_error = errno != 0 ? errno : EMFILE;
+            (void)close(descriptors[0]);
+            (void)close(descriptors[1]);
+            return nullptr;
+        }
+
         std::unique_ptr<StderrCapture> capture;
         try {
             capture = std::unique_ptr<StderrCapture>(new StderrCapture(
                 options.max_bytes,
-                longest_literal,
                 options.redact_literals,
                 descriptors[0],
                 descriptors[1]));
+            capture->buffer_.reserve(options.max_bytes);
             capture->reader_ = std::thread([capture_ptr = capture.get()] {
                 capture_ptr->drain();
             });
         } catch (const std::bad_alloc&) {
-            (void)close(descriptors[0]);
-            (void)close(descriptors[1]);
+            if (capture != nullptr) {
+                capture.reset();
+            } else {
+                (void)close(descriptors[0]);
+                (void)close(descriptors[1]);
+            }
             native_error = ENOMEM;
             return nullptr;
         } catch (const std::system_error& error) {
-            (void)close(descriptors[0]);
-            (void)close(descriptors[1]);
+            if (capture != nullptr) {
+                capture.reset();
+            } else {
+                (void)close(descriptors[0]);
+                (void)close(descriptors[1]);
+            }
             native_error = error.code().value() != 0 ? error.code().value() : EAGAIN;
             return nullptr;
         }
@@ -150,11 +213,11 @@ public:
             truncated = truncated_;
         }
 
-        auto redacted = redact_text(std::move(raw), redact_literals_);
-        if (redacted.size() > max_bytes_) {
-            redacted.resize(max_bytes_);
-            truncated = true;
-        }
+        auto redacted = redact_text(
+            std::move(raw),
+            redact_literals_,
+            truncated,
+            max_bytes_);
 
         return {
             std::move(redacted),
@@ -166,12 +229,10 @@ public:
 private:
     StderrCapture(
         const std::size_t max_bytes,
-        const std::size_t longest_literal,
         std::vector<std::string> redact_literals,
         const int read_fd,
         const int write_fd)
         : max_bytes_(max_bytes),
-          capture_bytes_(max_bytes + longest_literal),
           redact_literals_(std::move(redact_literals)),
           read_fd_(read_fd),
           write_fd_(write_fd)
@@ -225,12 +286,12 @@ private:
     void append(const char* data, const std::size_t size) noexcept
     {
         std::lock_guard lock(mutex_);
-        if (buffer_.size() >= capture_bytes_) {
+        if (buffer_.size() >= max_bytes_) {
             truncated_ = true;
             return;
         }
 
-        const auto remaining = capture_bytes_ - buffer_.size();
+        const auto remaining = max_bytes_ - buffer_.size();
         const auto accepted = std::min(remaining, size);
         try {
             buffer_.append(data, accepted);
@@ -244,7 +305,6 @@ private:
     }
 
     std::size_t max_bytes_;
-    std::size_t capture_bytes_;
     std::vector<std::string> redact_literals_;
     int read_fd_{-1};
     int write_fd_{-1};
