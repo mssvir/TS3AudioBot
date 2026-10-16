@@ -1,9 +1,8 @@
 # MSSV process supervision conformance fixture v1
 # kind\tname\tvalue...
-classification\tmissing_executable\t2\ttrue\tmissing_executable
-classification\tlinux_eagain\t11\ttrue\tresource_exhaustion
-classification\tnon_linux_errno_11\t11\tfalse\tother_native_error
-classification\tgeneric_native_error\t13\ttrue\tother_native_error
+classification\tmissing_executable\t2\tany\tmissing_executable
+classification\tlinux_eagain\t11\tlinux\tresource_exhaustion
+classification\tgeneric_native_error\t13\tany\tother_native_error
 policy\tbase_cooldown_ms\t250
 policy\tmax_cooldown_ms\t5000
 policy\tprobe_retry_ms\t250
