@@ -4,7 +4,7 @@ This directory begins Phase 1 of the MSSV native C++ migration. It is intentiona
 
 ## First seam
 
-The first native seam covers process-start classification, admission policy, and a narrow child-process lifecycle contract. It now includes a real Linux backend for integration testing, but it does not alter the shipping TS3AudioBot runtime and does not yet supervise production FFmpeg processes.
+The first native seam covers process-start classification, admission policy, lifecycle observability, and a narrow child-process lifecycle contract. It includes a real Linux backend for integration testing, but it does not alter the shipping TS3AudioBot runtime and does not yet supervise production FFmpeg processes.
 
 The managed reference behavior is `TS3AudioBot/Audio/FfmpegStartAdmissionGate.cs` plus the FFmpeg process-start classification in `TS3AudioBot/Audio/FfmpegProducer.cs`. Shared classification/admission expectations live in `conformance/process_supervision_v1.tsv` and are consumed by both managed and native tests.
 
@@ -29,9 +29,28 @@ The native contract currently requires:
 
 ## Injectable lifecycle boundary
 
-`ProcessBackend` is the narrow ownership boundary for the native seam. It exposes only spawn, terminate, bounded wait, force-kill, and reap operations. `ProcessSupervisor` composes that backend with the admission gate and error classifier.
+`ProcessBackend` is the narrow ownership boundary for the native seam. It exposes only spawn, terminate, bounded wait, force-kill, and reap operations. `ProcessSupervisor` composes that backend with the admission gate, error classifier, and an optional metrics sink.
 
 `LinuxProcessBackend` is the first real backend. It uses `posix_spawn` with `POSIX_SPAWN_SETPGROUP`, inherits the current environment, constructs argv directly, observes exit without prematurely reaping via `waitid(..., WNOWAIT)`, and performs the final leader reap with `waitpid`. Child ownership is reserved before spawn so a successful spawn cannot become untracked because of a post-spawn container allocation.
+
+## Lifecycle observability
+
+`ProcessSupervisionMetrics` is a native, thread-safe in-memory metrics surface. The supervisor can update it without changing existing callers because the metrics sink is optional.
+
+The current snapshot exposes:
+
+- active children;
+- total successful starts;
+- admission-denied starts;
+- total start failures;
+- resource-exhaustion start failures;
+- missing-executable failures;
+- other native start failures;
+- observed exits;
+- successful forced-kill requests;
+- incomplete cleanup failures.
+
+Counters use relaxed atomics because they are observability signals rather than synchronization primitives. Active-child decrement is saturating, so an unexpected reap event cannot wrap the gauge below zero. An unreaped child remains visible as active and incomplete cleanup increments the cleanup-failure counter.
 
 ## Safety boundary
 
@@ -49,11 +68,12 @@ Deterministic native tests currently inject:
 - graceful cancellation cleanup;
 - timeout escalation to force-kill and reap;
 - failed cleanup where exit/reap cannot be confirmed;
-- failed terminate request followed by deterministic escalation.
+- failed terminate request followed by deterministic escalation;
+- metrics behavior for successful lifecycle, resource pressure plus admission denial, categorized start failures, and incomplete forced cleanup.
 
 ## Linux integration coverage
 
-Real Linux integration tests now verify:
+Real Linux integration tests verify:
 
 - a missing executable is surfaced as real `ENOENT` through the backend;
 - a spawned child is the leader of its own process group;
@@ -69,8 +89,7 @@ The process-tree fixture is test-only and contains no production data or credent
 Before this seam may supervise real FFmpeg children in a canary, add:
 
 1. bounded stderr capture/redaction;
-2. counters for active children, denied starts, failures, exits, forced kills, and cleanup failures;
-3. systemd/cgroup-friendly ownership and shutdown verification, including stubborn descendant behavior;
-4. representative CPU, RSS, task/thread, and child-process measurements;
-5. FFmpeg-specific integration coverage using non-sensitive fixtures;
-6. canary integration behind an explicit managed fallback.
+2. systemd/cgroup-friendly ownership and shutdown verification, including stubborn descendant behavior;
+3. representative CPU, RSS, task/thread, and child-process measurements;
+4. FFmpeg-specific integration coverage using non-sensitive fixtures;
+5. canary integration behind an explicit managed fallback.

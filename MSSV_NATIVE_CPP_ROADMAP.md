@@ -79,7 +79,9 @@ A narrow injectable `ProcessBackend`/`ProcessSupervisor` lifecycle boundary cove
 
 A real Linux backend now implements direct `posix_spawn` execution with no shell interpolation, dedicated process-group ownership, bounded non-reaping exit observation, group SIGTERM/SIGKILL, and final leader reaping. Linux integration fixtures verify real ENOENT classification, dedicated process groups, descendant group inheritance, graceful descendant reaping without an orphan, and timeout escalation against a SIGTERM-ignoring process. This remains non-shipping and is not yet connected to production FFmpeg.
 
-The next Phase 1 work is observability and production-shape validation: bounded stderr capture/redaction, lifecycle counters, cgroup/systemd shutdown verification including stubborn descendants, representative resource measurements, FFmpeg-specific integration fixtures, then a managed-fallback canary.
+Lifecycle observability is now represented by an optional thread-safe `ProcessSupervisionMetrics` sink. It exposes active children, successful starts, admission denials, categorized start failures, observed exits, forced kills, and cleanup failures without changing existing callers. Unreaped children remain visible as active, and incomplete cleanup is counted explicitly.
+
+The next Phase 1 work is production-shape validation: bounded stderr capture/redaction, cgroup/systemd shutdown verification including stubborn descendants, representative resource measurements, FFmpeg-specific integration fixtures, then a managed-fallback canary.
 
 ## Phase 2 — native audio pipeline
 
@@ -145,7 +147,8 @@ The authoritative public source remains this repository. Private deployment and 
 - [x] Add cross-implementation conformance tests for the first seam.
 - [x] Add deterministic failure-injection tests for EAGAIN, missing executable, cancellation, timeout, and child cleanup policy.
 - [x] Add a real Linux process backend plus process-group/orphan cleanup integration tests.
-- [ ] Add bounded stderr capture/redaction and lifecycle health counters.
+- [x] Add lifecycle health counters for active children, denied starts, categorized failures, exits, forced kills, and cleanup failures.
+- [ ] Add bounded stderr capture/redaction.
 - [ ] Verify systemd/cgroup shutdown behavior, including stubborn descendants.
 - [ ] Measure CPU, RSS, thread/task count, and child-process behavior under representative playback fan-out.
 - [ ] Add FFmpeg-specific native integration fixtures without production/customer data.

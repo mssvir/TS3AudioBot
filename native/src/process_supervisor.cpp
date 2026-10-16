@@ -1,12 +1,15 @@
 #include "mssv/process_supervisor.h"
 
+#include "mssv/process_supervision_metrics.h"
+
 namespace mssv::process {
 
 ProcessSupervisor::ProcessSupervisor(
     ProcessBackend& backend,
     SpawnAdmissionGate& admission_gate,
-    const bool is_linux) noexcept
-    : backend_(backend), admission_gate_(admission_gate), is_linux_(is_linux)
+    const bool is_linux,
+    ProcessSupervisionMetrics* const metrics) noexcept
+    : backend_(backend), admission_gate_(admission_gate), is_linux_(is_linux), metrics_(metrics)
 {
 }
 
@@ -14,6 +17,9 @@ StartResult ProcessSupervisor::start()
 {
     SpawnAdmissionGate::Duration retry_after{};
     if (!admission_gate_.try_enter(retry_after)) {
+        if (metrics_ != nullptr) {
+            metrics_->record_denied_start();
+        }
         return {
             StartStatus::admission_denied,
             0,
@@ -25,6 +31,9 @@ StartResult ProcessSupervisor::start()
     const auto attempt = backend_.spawn();
     if (attempt.started) {
         admission_gate_.record_success();
+        if (metrics_ != nullptr) {
+            metrics_->record_started();
+        }
         return {
             StartStatus::started,
             attempt.child_id,
@@ -37,6 +46,9 @@ StartResult ProcessSupervisor::start()
     switch (failure.category) {
     case SpawnFailureCategory::resource_exhaustion: {
         const auto cooldown = admission_gate_.record_resource_failure();
+        if (metrics_ != nullptr) {
+            metrics_->record_resource_exhaustion_failure();
+        }
         return {
             StartStatus::resource_exhaustion,
             0,
@@ -46,6 +58,9 @@ StartResult ProcessSupervisor::start()
     }
     case SpawnFailureCategory::missing_executable:
         admission_gate_.record_non_resource_failure();
+        if (metrics_ != nullptr) {
+            metrics_->record_missing_executable_failure();
+        }
         return {
             StartStatus::missing_executable,
             0,
@@ -54,6 +69,9 @@ StartResult ProcessSupervisor::start()
         };
     case SpawnFailureCategory::other_native_error:
         admission_gate_.record_non_resource_failure();
+        if (metrics_ != nullptr) {
+            metrics_->record_other_start_failure();
+        }
         return {
             StartStatus::spawn_failed,
             0,
@@ -63,6 +81,9 @@ StartResult ProcessSupervisor::start()
     }
 
     admission_gate_.record_non_resource_failure();
+    if (metrics_ != nullptr) {
+        metrics_->record_other_start_failure();
+    }
     return {
         StartStatus::spawn_failed,
         0,
@@ -92,6 +113,22 @@ StopResult ProcessSupervisor::stop(
     }
 
     result.reaped = backend_.reap(child_id);
+
+    if (metrics_ != nullptr) {
+        if (result.forced_kill) {
+            metrics_->record_forced_kill();
+        }
+        if (result.exit_observed) {
+            metrics_->record_exit_observed();
+        }
+        if (result.reaped) {
+            metrics_->record_reaped();
+        }
+        if (!result.cleanup_complete()) {
+            metrics_->record_cleanup_failure();
+        }
+    }
+
     return result;
 }
 
